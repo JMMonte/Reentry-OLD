@@ -44,7 +44,7 @@ def make_download_link(df, filename, text):
 
 # Begin the app
 #--------------------------------------------
-st.set_page_config(layout="wide")
+st.set_page_config(layout="wide", page_title="Spacecraft Reentry Simulation", page_icon="☄️")
 st.title("Spacecraft Reentry Simulation")
 if "impact" not in st.session_state:
     st.session_state.impact = False
