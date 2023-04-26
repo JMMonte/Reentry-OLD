@@ -1,0 +1,7 @@
+#venv
+.venv/
+__pycache__/
+
+#files
+basic_sim.ipynb
+reentry_sim.ipynb

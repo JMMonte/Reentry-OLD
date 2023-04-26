@@ -1,0 +1,35 @@
+Metadata-Version: 2.1
+Name: astroquery
+Version: 0.4.6
+Summary: Functions and classes to access online astronomical data resources
+Home-page: http://astropy.org/astroquery
+Author: The Astroquery Developers
+License: BSD
+Platform: UNKNOWN
+Requires-Dist: numpy (>=1.16)
+Requires-Dist: astropy (>=4.0)
+Requires-Dist: requests (>=2.4.3)
+Requires-Dist: beautifulsoup4 (>=4.3.2)
+Requires-Dist: html5lib (>=0.999)
+Requires-Dist: keyring (>=4.0)
+Requires-Dist: pyvo (>=1.1)
+Provides-Extra: all
+Requires-Dist: mocpy (>=0.5.2) ; extra == 'all'
+Requires-Dist: astropy-healpix ; extra == 'all'
+Requires-Dist: boto3 ; extra == 'all'
+Requires-Dist: regions ; extra == 'all'
+Requires-Dist: pyregion ; extra == 'all'
+Requires-Dist: aplpy ; extra == 'all'
+Provides-Extra: docs
+Requires-Dist: sphinx-astropy (>=1.5) ; extra == 'docs'
+Requires-Dist: scipy ; extra == 'docs'
+Provides-Extra: test
+Requires-Dist: pytest-astropy ; extra == 'test'
+Requires-Dist: matplotlib ; extra == 'test'
+Requires-Dist: jinja2 ; extra == 'test'
+Requires-Dist: flask ; extra == 'test'
+Requires-Dist: pytest-dependency ; extra == 'test'
+
+UNKNOWN
+
+
