@@ -1,5 +1,5 @@
 astropy
-cartopy--no-binary=cartopy
+cartopy
 matplotlib
 numpy
 pandas
