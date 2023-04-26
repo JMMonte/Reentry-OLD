@@ -7,4 +7,4 @@ plotly==5.13.1
 poliastro==0.17.0
 scipy==1.10.1
 streamlit==1.20.0
-geos==3.11.2
+geos==0.2.3
