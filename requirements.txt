@@ -1,5 +1,5 @@
 astropy==5.2.2
-cartopy==0.21.1
+cartopy --no-binary=cartopy
 matplotlib==3.7.1
 numpy==1.23.5
 pandas==1.5.3
