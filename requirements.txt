@@ -8,4 +8,3 @@ poliastro
 scipy
 streamlit
 geos
-libgeos-dev
