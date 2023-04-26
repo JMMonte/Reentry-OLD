@@ -1,7 +1,9 @@
 #venv
-venv/
-__pycache__/
+/venv/
+/__pycache__/
+/data/
 
 #files
 basic_sim.ipynb
 reentry_sim.ipynb
+test.py
