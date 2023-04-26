@@ -2,16 +2,12 @@ from astropy import units as u
 from astropy.time import Time
 from coordinate_converter import CoordinateConverter
 import numpy as np
-import os
-import pickle
-import plotly.graph_objects as go
 from poliastro.bodies import Moon, Earth
 from poliastro.constants import J2_earth
 from poliastro.core.perturbations import third_body
 from poliastro.earth.atmosphere import COESA76
 from poliastro.ephem import Ephem
 from scipy.integrate import solve_ivp
-from spacecraft_visualization import SpacecraftVisualization
 
 class SpacecraftModel:
     def __init__(self, Cd=2.2, A=20.0, m=500.0):

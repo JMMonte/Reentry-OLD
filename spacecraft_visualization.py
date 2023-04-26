@@ -1,5 +1,4 @@
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import numpy as np
 from poliastro.bodies import Earth
 from coordinate_converter import CoordinateConverter

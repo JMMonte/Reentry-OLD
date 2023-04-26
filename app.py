@@ -1,7 +1,7 @@
 from astropy import units as u
 from astropy.time import Time, TimeDelta
 from astropy.coordinates import get_sun
-from astropy.coordinates import SkyCoord, EarthLocation, AltAz
+from astropy.coordinates import EarthLocation, AltAz
 import base64
 import cartopy.feature as cfeature
 from copy import deepcopy
@@ -23,7 +23,7 @@ class LoadedSolution:
     def __init__(self, t, y):
         self.t = t
         self.y = y
-        
+
 def filter_results_by_altitude(sol, R):
     altitudes = [data['altitude'] for data in sol.additional_data]
     valid_indices = [i for i, alt in enumerate(altitudes) if alt >= 0]
