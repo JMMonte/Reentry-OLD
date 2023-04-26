@@ -1,5 +1,11 @@
 # Spacecraft Reentry Simulation
 
+![Screenshot](/assets/newplot.png)
+
+| | |
+|:-------------------------:|:-------------------------:|
+![Screenshot](+/../assets/newplot%20(1).png)  |  ![Screenshot](/assets/Screenshot%202023-04-26%20at%2000.45.34.png)
+![Screenshot](/assets/Screenshot%202023-04-26%20at%2000.46.07.png)  |  ![Screenshot](/assets/Screenshot%202023-04-26%20at%2000.45.42.png)
 
 This is a Python-based web application that simulates the complex dynamics of a spacecraft orbiting around the Earth. It takes into account the Earth's rotation, J2 perturbations, atmospheric drag, and the Moon's gravity while predicting the spacecraft's trajectory. 
 
@@ -44,3 +50,9 @@ You can modify the code to add more features or to change the existing behavior 
 ## License
 
 This project is free and open-source. You are allowed to use, modify, and distribute the code as long as you give appropriate credit to the original creator.
+
+## Acknowledgements
+
+- [poliastro](https://docs.poliastro.space/en/stable/)
+- [astropy](https://www.astropy.org/)
+- [streamlit](https://streamlit.io/)
