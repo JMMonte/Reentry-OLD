@@ -19,10 +19,26 @@ class SpacecraftModel:
         self.m = m  # mass of spacecraft in kg
     
     def earth_rotational_velocity(self, r):
+        '''
+        Calculates the Earth's rotational velocity vector in ECI frame
+        :param r: position vector in ECI frame
+        :return: Earth's rotational velocity vector in ECI frame
+        '''
         omega_cross_r = np.cross([0, 0, self.omega], r)
         return omega_cross_r
 
     def get_initial_state(self, v, lat, lon, alt, azimuth, attractor=Earth, gmst=0):
+        '''
+        Calculates the initial state vector of the spacecraft
+        :param v: velocity of spacecraft in m/s
+        :param lat: latitude of spacecraft in degrees
+        :param lon: longitude of spacecraft in degrees
+        :param alt: altitude of spacecraft in meters
+        :param azimuth: azimuth of spacecraft's velocity in degrees
+        :param attractor: attractor object
+        :param gmst: Greenwich mean sidereal time in degrees
+        :return: initial state vector of spacecraft
+        '''
         lat_rad = np.deg2rad(lat)
         lon_rad = np.deg2rad(lon)
 
@@ -50,12 +66,20 @@ class SpacecraftModel:
         v_z_ecef_total = v_z_ecef
 
         v_eci = CoordinateConverter.ecef_to_eci(v_x_ecef_total, v_y_ecef_total, v_z_ecef_total, gmst)
+        # Subtract Earth's rotational velocity from the initial ECI velocity vector
+        v_earth_rotation = self.earth_rotational_velocity(r_eci)
+        v_eci -= v_earth_rotation
 
         y0 = np.concatenate((r_eci, v_eci))
 
         return y0
     
     def compute_J2_acceleration(self, r):
+        '''
+        Calculates the J2 perturbation acceleration vector
+        :param r: position vector in ECI frame
+        :return: J2 perturbation acceleration vector in ECI frame
+        '''
         r_norm = np.linalg.norm(r)
         z2 = r[2] ** 2
         rxy2 = r[0] ** 2 + r[1] ** 2
@@ -69,12 +93,23 @@ class SpacecraftModel:
         return a_J2.value
 
     def get_moon_position(self, t):
+        '''
+        Calculates the position vector of the Moon in ECI frame
+        :param t: time in seconds
+        :return: position vector of the Moon in ECI frame
+        '''
         t_astropy = Time(t, format="jd", scale="tdb")
         moon_ephem = Ephem.from_body(Moon, t_astropy)
         moon_r = np.array(moon_ephem.rv()[0]) * u.km.to(u.m)  # Convert to meters
         return moon_r
     
     def equations_of_motion(self, t, y):
+        '''
+        Calculates the derivatives of the state vector
+        :param t: time in seconds
+        :param y: state vector
+        :return: derivatives of the state vector
+        '''
         r = y[0:3]  # position vector
         v = y[3:6]  # velocity vector
 
@@ -93,15 +128,15 @@ class SpacecraftModel:
         # Compute third body perturbation (moon)
         moon_r = self.get_moon_position(t).flatten()  # Add .flatten() here
         mu_moon = Moon.k.to_value(u.km ** 3 / u.s ** 2)  # Convert to km^3/s^2
-        a_moon = third_body(t, y * u.m.to(u.km), self.mu * u.m ** 3 / u.s ** 2 * u.km ** -3, mu_moon, lambda t0: moon_r)  # Convert y from meters to kilometers
-        a_moon = np.array(a_moon) * u.km / u.s**2 * u.m / u.s**2  # Convert the acceleration from km/s^2 to m/s^2
+        a_moon = third_body(t, y * u.m.to(u.km), self.mu * u.km ** 3 / u.s ** 2 * u.km ** -3, mu_moon, lambda t0: moon_r)  # Convert y from meters to kilometers
+        a_moon = (np.array(a_moon) * u.m / u.s**2 * u.m / u.s**2).value * u.m/u.s**2 / self.m  # Convert the acceleration from km/s^2 to m/s^2 and account for the mass of the spacecraft
 
         # Compute atmospheric density and drag acceleration
         altitude = np.linalg.norm(r) - self.R
         if 0 <= altitude <= 1e6:  # Check if altitude is within the valid range of the atmospheric model
             rho = COESA76().density(altitude*u.m).to(u.kg / u.m**3).value
             v_norm = np.linalg.norm(v_relative)
-            a_drag = -0.5 * self.Cd * self.A / self.m * rho * v_norm * v_relative
+            a_drag = -0.5 * self.Cd * self.A * rho * v_norm * v_relative / self.m
         else:
             a_drag = np.zeros(3)  # Set drag acceleration to zero if altitude is outside the valid range
 
@@ -119,7 +154,21 @@ class SpacecraftModel:
         }
     
     def run_simulation(self, t_span, y0, t_eval, previous_sol=None):
+        '''
+        Runs the simulation
+        :param t_span: time span in seconds
+        :param y0: initial state vector
+        :param t_eval: time points to evaluate the solution
+        :param previous_sol: previous solution to concatenate with
+        :return: solution object
+        '''
         def rhs(t, y):
+            '''
+            Right-hand side of the differential equation
+            :param t: time in seconds
+            :param y: state vector
+            :return: derivatives of the state vector
+            '''
             dy = self.equations_of_motion(t, y)
             return np.concatenate((dy['velocity'], dy['acceleration']))
 
@@ -135,20 +184,3 @@ class SpacecraftModel:
             sol.additional_data.extend(previous_sol.additional_data)
 
         return sol
-
-# debug class
-if __name__ == '__main__':
-    spacecraft = SpacecraftModel()
-    y0 = spacecraft.get_initial_state(7.5e3, 0, 0, 120000, Earth, 0)
-    print("y0: ", y0)
-
-    t_span = [0, 6000]
-    t_eval = np.linspace(0, 6000, 1000)
-    sol = spacecraft.run_simulation(t_span, y0, t_eval)
-    print("sol: ", sol)
-
-    chart_data = spacecraft.generate_chart_data(sol)
-    for trace in chart_data:
-        trace.add_trace(chart_data[0])
-
-    print('done')
