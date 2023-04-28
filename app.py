@@ -13,6 +13,10 @@ from poliastro.twobody import Orbit
 from spacecraft_model import SpacecraftModel
 from spacecraft_visualization import SpacecraftVisualization
 import streamlit as st
+import plotly.express as px
+import matplotlib.colors as mcolors
+import matplotlib.cm as cm
+from numba import jit, njit
 
 #Constants
 #Earth
@@ -36,7 +40,7 @@ class LoadedSolution:
     def __init__(self, t, y):
         self.t = t
         self.y = y
-
+@jit(nopython=True)
 def filter_results_by_altitude(sol, altitude):
     valid_indices = [i for i, alt in enumerate(altitude) if alt >= 0]
 
@@ -48,6 +52,7 @@ def filter_results_by_altitude(sol, altitude):
     return sol
 
 # Create a download link for the simulated data
+
 def make_download_link(df, filename, text):
     csv = df.to_csv(index=False)
     b64 = base64.b64encode(csv.encode()).decode()
@@ -297,6 +302,7 @@ st.sidebar.markdown(make_download_link(df, 'simulated_data.csv', 'Download simul
 # Plots
 #--------------------------------------------
 # Create the 3d header plot
+
 with st.spinner("Generating trajectory 3d plot..."):
     fig3 = go.Figure(layout=layout)
     orbit_trace = visualization.plot_orbit_3d(orbit, color='green', name='Classical orbit', dash='dot')
@@ -367,8 +373,10 @@ else:
 
 
 final_time = epoch + TimeDelta(impact_time, format='sec')
+col2.warning(f"🌡️ The spacecraft reached a heat rate of {max(heat_rate)} W/m^2 during simulation. You can see what parts of the orbit were the hottest in the 3d plot above")
 col3.info(f"⏰ The simulation start time was {epoch} and ended on: {final_time}, with a total time simulated of: {duration} (hh,mm,ss)")
 col2.info(f"🛰️ The spacecraft was at an altitude of {altitude[-1]}m at the end of the simulation")
+col3.info(f"🛰️ The spacecraft was at a velocity of {velocity[-1]}m/s at the end of the simulation")
 
 
 
@@ -512,64 +520,57 @@ To do this we need to adjust our original frame of reference (Earth-Centered Ine
 col1, col2 = st.columns(2)
 
 fig7 = go.Figure()
-latitudes = []
-longitudes = []
-
-for i in range(len(sol.t)):
-    # Update gmst for each time step of the simulation
-    gmst = (gmst0 + EARTH_ROT_SPEED_DEG_S * sol.t[i]) * np.pi / 180  # Convert gmst to radians
-
-    # Convert the position data into ECEF coordinates
-    ecef_coords = convert.eci_to_ecef(sol.y[0, i], sol.y[1, i], sol.y[2, i], gmst)
-
-    # Convert the ECEF coordinates into lat, lon, alt
-    lat_lon_alt = convert.ecef_to_geo(ecef_coords[0], ecef_coords[1], ecef_coords[2])
-
-    # Break down the lat, lon, alt
-    lat_lon = lat_lon_alt[0:2]
-
-    # Multiply the lat and lon by 180/pi to convert from radians to degrees
-    lat_lon = np.multiply(lat_lon, 180/np.pi)
-
-    latitudes.append(lat_lon[0])
-    longitudes.append(lat_lon[1])
+gmst_values = [(gmst0 + EARTH_ROT_SPEED_DEG_S * t) * np.pi / 180 for t in sol.t]
+ecef_coords = [convert.eci_to_ecef(sol.y[0, i], sol.y[1, i], sol.y[2, i], gmst) for i, gmst in enumerate(gmst_values)]
+lat_lon_alt = [convert.ecef_to_geo(coord[0], coord[1], coord[2]) for coord in ecef_coords]
+latitudes, longitudes = zip(*[(coord[0] * 180/np.pi, coord[1] * 180/np.pi) for coord in lat_lon_alt])
 
 # show last position coordinates
-st.info(f'Your spacecraft was last heard of at these coordinates: {lat_lon[0]:.2f}°, {lat_lon[1]:.2f}°, and {lat_lon_alt[2]:.2f} m above sea level.')
+# Custom function to convert matplotlib colormap to Plotly colorscale
 
-# Calculate the solar zenith angle at the final time considering the Earth's tilt
-# sza, lat_grid, lon_grid = convert.solar_zenith_angle(final_time)
-# # Calculate the night side overlay coordinates
-# night_side_lons, night_side_lats = convert.night_side_coordinates(sza, lat_grid, lon_grid)
+def mpl_to_plotly_colormap(cmap, num_colors=256):
+    colors = [mcolors.rgb2hex(cmap(i)[:3]) for i in range(num_colors)]
+    scale = np.linspace(0, 1, num=num_colors)
+    return [list(a) for a in zip(scale, colors)]
 
-# # Add the night side overlay to the map
-# fig7.add_trace(go.Scattergeo(
-#     lon=night_side_lons,
-#     lat=night_side_lats,
-#     mode='markers',
-#     marker=dict(color='rgba(0, 0, 70, 1)', size=3),
-#     hoverinfo='none',  # Disable hover effect
-#     showlegend=False,
-#     name='Night side',
-# ))
+colormap = cm.get_cmap('plasma')
+custom_colorscale = mpl_to_plotly_colormap(colormap)
+vmin, vmax = np.min(altitude), np.max(altitude)
+normalized_altitude = (altitude - vmin) / (vmax - vmin)
+
+# Number of subdivisions in the color scale
+num_subdivisions = 10
+
+# Calculate tick values and tick text for the subdivisions
+tickvals = np.linspace(0, 1, num_subdivisions)
+ticktext = [f"{vmin + tick * (vmax - vmin):.2f}" for tick in tickvals]
+
 with st.spinner("Generating Groundtrack map..."):
     # Add a single trace for the ground track
     fig7.add_trace(go.Scattergeo(
         lon=longitudes,
         lat=latitudes,
         mode='lines+markers',
-        marker=dict(color='red', size=2),
-        # map resolution
+        marker=dict(
+            color=normalized_altitude,
+            size=2,
+            colorscale=custom_colorscale,
+            showscale=True,
+            colorbar=dict(
+                title="Altitude (m)",
+                tickvals=tickvals,
+                ticktext=ticktext,
+            ),
+        ),
         showlegend=True,
         name='Groundtrack',
     ))
 
+
     # add point for starting point and another for final position
-    final_lat = latitudes[-1]
-    final_lon = longitudes[-1]
     fig7.add_trace(go.Scattergeo(
-        lon=[final_lon],
-        lat=[final_lat],
+        lon=[longitudes[-1]],
+        lat=[latitudes[-1]],
         mode='markers',
         marker=dict(color='orange', size=10),
         showlegend=True,
@@ -626,15 +627,19 @@ In this simulation we are taking into account:
 In our starting scenario (in Low Earth Orbit), you can see that the total acceleration is mainly affected by the Earth's gravitational acceleration. However, you can click on the legend to hide the total acceleration to adjust the graphs y axis so the other accelerations are visible.
 '''
 with st.spinner('Loading accelerations graph...'):
-    fig8 = go.Figure()
-    fig8.add_trace(go.Scatter(x=sol.t, y=np.linalg.norm(total_acceleration, axis=1), name='Total acceleration'))
-    fig8.add_trace(go.Scatter(x=sol.t, y=np.linalg.norm(earth_grav_acceleration, axis=1), name='Earth grav. acceleration'))
-    fig8.add_trace(go.Scatter(x=sol.t, y=np.linalg.norm(j2_acceleration, axis=1), name='J2 acceleration'))
-    fig8.add_trace(go.Scatter(x=sol.t, y=np.linalg.norm(moon_acceleration, axis=1), name='Moon grav. acceleration'))
-    fig8.add_trace(go.Scatter(x=sol.t, y=np.linalg.norm(drag_acceleration, axis=1), name='Drag acceleration'))
-    fig8.add_trace(go.Scatter(x=sol.t, y=np.linalg.norm(sun_acceleration, axis=1), name='Sun grav. acceleration'))
-    max_accel = max(np.max(total_acceleration), np.max(earth_grav_acceleration), np.max(j2_acceleration), np.max(moon_acceleration), np.max(drag_acceleration))
-    min_accel = min(np.min(total_acceleration), np.min(earth_grav_acceleration), np.min(j2_acceleration), np.min(moon_acceleration), np.min(drag_acceleration))
+    accelerations = [
+        (np.linalg.norm(total_acceleration, axis=1), 'Total acceleration'),
+        (np.linalg.norm(earth_grav_acceleration, axis=1), 'Earth grav. acceleration'),
+        (np.linalg.norm(j2_acceleration, axis=1), 'J2 acceleration'),
+        (np.linalg.norm(moon_acceleration, axis=1), 'Moon grav. acceleration'),
+        (np.linalg.norm(drag_acceleration, axis=1), 'Drag acceleration'),
+        (np.linalg.norm(sun_acceleration, axis=1), 'Sun grav. acceleration')
+    ]
+
+    fig8 = go.Figure([go.Scatter(x=sol.t, y=acc[0], name=acc[1]) for acc in accelerations])
+    max_accel = max(np.max(acc[0]) for acc in accelerations)
+    min_accel = min(np.min(acc[0]) for acc in accelerations)
+
     if crossing_points is not None:
         for idx, crossing_point in enumerate(crossing_points):
             fig8.add_shape(type='line', x0=crossing_point, x1=crossing_point, y0=min_accel, y1=max_accel, yref='y', xref='x', line=dict(color='rgba(255, 0, 0, 0.5)', width=2, dash='dot'))

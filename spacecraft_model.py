@@ -283,7 +283,7 @@ class SpacecraftModel:
 
         def progress_event(t, y):
             if progress_callback is not None:
-                progress = min((t - t_span[0]) / (t_span[1] - t_span[0]) * 2, 1.0)  # Make sure progress doesn't exceed 1.0
+                progress = min((t - t_span[0]) / (t_span[1] - t_span[0]), 1.0)  # Make sure progress doesn't exceed 1.0
                 elapsed_time = time.time() - self.start_time
                 progress_callback(progress, elapsed_time)
             return 0
