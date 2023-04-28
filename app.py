@@ -185,7 +185,7 @@ if run_simulation:
 if not run_simulation:
     # 3D Earth figure
     st.info('''Welcome to the your heatshield's worst nightmare!:s
-    👈 To get started, choose your spacecraft's characteristics and initial conditions. You can see your projected orbit below.:s Then choose the amount of time you want to simulate and press the big red flamy button.''')
+    👈 To get started, open the sidebar and choose your spacecraft's characteristics and initial conditions. You can see your projected orbit below.:s Then choose the amount of time you want to simulate and press the big red flamy button.''')
     fig2 = go.Figure(layout=layout)
 
     # Add orbit trace
