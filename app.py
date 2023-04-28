@@ -1,4 +1,4 @@
-import random
+from poliastro.bodies import Earth
 from astropy import units as u
 from astropy.time import Time, TimeDelta
 import base64
@@ -9,11 +9,25 @@ import datetime
 import plotly.graph_objects as go
 import pandas as pd
 import numpy as np
-from poliastro.bodies import Earth
 from poliastro.twobody import Orbit
 from spacecraft_model import SpacecraftModel
 from spacecraft_visualization import SpacecraftVisualization
 import streamlit as st
+
+#Constants
+#Earth
+EARTH_MU = 398600441800000.0  # gravitational parameter of Earth in m^3/s^2
+EARTH_R = 6378137.0  # radius of Earth in m
+EARTH_R_KM = 6378.137  # radius of Earth in m
+EARTH_R_POLAR = 6356752.3142  # polar radius of Earth in m
+EARTH_OMEGA = 7.292114146686322e-05  # Earth rotation speed in rad/s
+EARTH_J2 = 0.00108263 # J2 of Earth
+EARTH_MASS = 5.972e24  # Mass (kg)
+#attractor_R, attractor_Rot_period
+EARTH_ROT_PERIOD_S = 23.9344696 * 3600 # Earth rotation period in seconds
+EARTH_ROT_SPEED_RAD_S = 2 * np.pi / EARTH_ROT_PERIOD_S # Earth rotation speed in rad/s
+EARTH_ROT_SPEED_DEG_S = 360 / EARTH_ROT_PERIOD_S # Earth rotation speed in deg/s
+EARTH_ROT_SPEED_M_S = EARTH_R * EARTH_ROT_SPEED_RAD_S # Earth rotation speed in m/s
 
 
 # Special functions
@@ -38,7 +52,6 @@ def make_download_link(df, filename, text):
     csv = df.to_csv(index=False)
     b64 = base64.b64encode(csv.encode()).decode()
     return f'<a href="data:file/csv;base64,{b64}" download="{filename}">{text}</a>'
-#--------------------------------------------
 
 # Begin the app
 #--------------------------------------------
@@ -49,8 +62,7 @@ convert = CoordinateConverter()
 data_directory = "data"
 coastline_feature = cfeature.COASTLINE
 country_feature = cfeature.BORDERS
-earth_rotation_deg_speed = convert.body_rotation_speed(Earth,'deg/s')
-earth_rotational_speed = convert.body_rotation_speed(Earth, 'm/s')
+
 layout = go.Layout(
     scene=dict(
         xaxis=dict(visible=False),
@@ -75,6 +87,7 @@ with st.sidebar:
         This app aims to simulate the complex dynamics of a spacecraft orbits around the Earth taking into account the Earth's rotation, J2 perturbations, atmospheric drag, the sun's gravity and the Moon's gravity while predicting the spacecraft's trajectory.:s
         Before running your simulation, you can edit the spacecraft's initial state and the simulation parameters.👇 :s
         The simulation uses the amazing [poliastro](https://docs.poliastro.space/en/stable/) library, as well as [astropy](https://www.astropy.org/).:s
+        To learn more about reentry astrodynamics I really reccommend this summary from the Aerostudents website: [Reentry](https://www.aerostudents.com/courses/rocket-motion-and-reentry-systems/ReEntrySummary.pdf).:s
         Made with ❤️ by [João Montenegro](https://monte-negro.space/).
         '''
     run_simulation = st.button("Run Simulation")
@@ -106,27 +119,9 @@ with st.sidebar:
     epoch = Time(spacecraft_datetime_string, format="iso", scale='tdb')
     gmst0 = epoch.sidereal_time('mean', 'greenwich').to_value(u.deg) # get the greenwich mean sidereal time
 
-    y0 = spacecraft.get_initial_state(v=v, lat=lat, lon=lon, alt=alt * 1000, azimuth=azimuth,gamma=gamma, attractor=Earth, gmst=gmst0)
+    y0 = spacecraft.get_initial_state(v=v, lat=lat, lon=lon, alt=alt * 1000, azimuth=azimuth,gamma=gamma, attractor_R=EARTH_R, attractor_R_Polar=EARTH_R_POLAR, gmst=gmst0)
     spacecraft = SpacecraftModel(Cd=codrag, A=area,m=mass, epoch=epoch, Cp=Cp)
     # Define integration parameters
-    st.subheader("Simulation Parameters")
-    ts = 0 # initial time in seconds
-    tf = st.number_input("Simulation duration (s)", min_value=0 , value=3700, step=1, key="tf", help="How long do you want to simulate the spacecraft?")  # final time in seconds
-    dt = st.number_input("Time step (s)", min_value=0 , value=10, step=1, key="dt", help="The simulation will be broken down into a time step. Shorter timesteps give more precision but will increase the processing time.")  # time step in seconds
-
-    # Extract vectors for charts
-    x_pos, y_pos, z_pos = y0[0:3] # Extract the position components
-    x_vel, y_vel, z_vel = y0[3:6] # Extract the velocity components
-
-    # Scale factor for the velocity vector
-    scale_factor = 500  # Adjust this value to scale the velocity vector
-    vel_arrow = visualization.create_3d_arrow(x_pos, y_pos, z_pos, x_pos + x_vel * scale_factor, y_pos + y_vel * scale_factor, z_pos + z_vel * scale_factor, 'blue', 'Velocity vector') # Velocity vector scaled
-    pos_arrow = visualization.create_3d_arrow(0, 0, 0, x_pos, y_pos, z_pos, 'red', 'Position vector') # Position vector
-
-    # Update time span and t_eval based on ts
-    t_span = (ts, tf)  # time span tuple
-    t_eval = np.arange(ts, tf, dt)  # time array for output
-    # get orbit from vectors
     orbit = Orbit.from_vectors(Earth, y0[0:3] * u.m, y0[3:6] * u.m / u.s, epoch)
     with sidebar.expander("Initial Orbit parameters"):
         f'''
@@ -148,7 +143,24 @@ with st.sidebar:
         True anomaly:s
         ${orbit.nu}$
         '''
-#--------------------------------------------
+    st.subheader("Simulation Parameters")
+    ts = 0 # initial time in seconds
+    tf = st.number_input("Simulation duration (s)", min_value=0 , value=3700, step=1, key="tf", help="How long do you want to simulate the spacecraft?")  # final time in seconds
+    dt = st.number_input("Time step (s)", min_value=0 , value=10, step=1, key="dt", help="The simulation will be broken down into a time step. Shorter timesteps give more precision but will increase the processing time.")  # time step in seconds
+
+    # Extract vectors for charts
+    x_pos, y_pos, z_pos = y0[0:3] # Extract the position components
+    x_vel, y_vel, z_vel = y0[3:6] # Extract the velocity components
+
+    # Scale factor for the velocity vector
+    scale_factor = 500  # Adjust this value to scale the velocity vector
+    vel_arrow = visualization.create_3d_arrow(x_pos, y_pos, z_pos, x_pos + x_vel * scale_factor, y_pos + y_vel * scale_factor, z_pos + z_vel * scale_factor, 'blue', 'Velocity vector') # Velocity vector scaled
+    pos_arrow = visualization.create_3d_arrow(0, 0, 0, x_pos, y_pos, z_pos, 'red', 'Position vector') # Position vector
+
+    # Update time span and t_eval based on ts
+    t_span = (ts, tf)  # time span tuple
+    t_eval = np.arange(ts, tf, dt)  # time array for output
+    # get orbit from vectors
 
 # Simulation
 #--------------------------------------------
@@ -166,46 +178,35 @@ if run_simulation:
     image.empty()
 
 if not run_simulation:
-    # begin 3d earth figure
-    fig2 = go.Figure()
+    # 3D Earth figure
     fig2 = go.Figure(layout=layout)
-    orbit_trace = visualization.plot_orbit_3d(orbit,color='green',name='Classical orbit',dash= 'dot') # convert orbit into scatter3d plotly trace
+
+    # Add orbit trace
+    fig2.add_trace(spheroid_mesh)
+    orbit_trace = visualization.plot_orbit_3d(orbit, color='green', name='Classical orbit', dash='dot')
     fig2.add_trace(orbit_trace)
 
-    # Add position and velocity arrows to the plot
-    for trace in pos_arrow:
-        fig2.add_trace(trace)
-    for trace in vel_arrow:
+    # Add position and velocity arrows
+    for trace in pos_arrow + vel_arrow:
         fig2.add_trace(trace)
 
-    # Recalculate the coastline traces based on the updated gmst0
-    country_traces = visualization.get_geo_traces(country_feature, gmst0)
-    coastline_traces = visualization.get_geo_traces(coastline_feature, gmst0)
-    fig2.add_trace(spheroid_mesh)
-    for trace in coastline_traces:
-        trace.showlegend = False
-        fig2.add_trace(trace)
-        
-    for trace in country_traces:
-        trace.showlegend = False
-        fig2.add_trace(trace)
+    # Add coastline traces
+    for feature in [country_feature, coastline_feature]:
+        for trace in visualization.get_geo_traces(feature, gmst0):
+            trace.showlegend = False
+            fig2.add_trace(trace)
 
-    lat_lines = visualization.create_latitude_lines(gmst=gmst0)
-    for lat_line in lat_lines:
-        lat_line.showlegend = False
-        fig2.add_trace(lat_line)
+    # Add latitude and longitude lines
+    for lines in [visualization.create_latitude_lines(gmst=gmst0), visualization.create_longitude_lines(gmst=gmst0)]:
+        for line in lines:
+            line.showlegend = False
+            fig2.add_trace(line)
 
-    lon_lines = visualization.create_longitude_lines(gmst=gmst0)
-    for lon_line in lon_lines:
-        lon_line.showlegend = False
-        fig2.add_trace(lon_line)
+    # Update layout
+    fig2.update_layout(legend=dict(yanchor="bottom", y=0.01, xanchor="left", x=0.01),
+                    scene_camera=dict(eye=dict(x=-0.5, y=0.6, z=1)),
+                    scene_aspectmode='data')
 
-    # set legend to bottom left
-    fig2.update_layout(legend=dict(yanchor="bottom", y=0.01, xanchor="left", x=0.01))
-    #zooming in
-    fig2.update_layout(scene_camera=dict(eye=dict(x=-0.5, y=0.6, z=1)))
-    # keep axis aspect ratio always equal
-    fig2.update_layout(scene_aspectmode='data')
     st.plotly_chart(fig2, use_container_width=True, equal_axes=True)
     st.stop()
 
@@ -296,88 +297,50 @@ st.sidebar.markdown(make_download_link(df, 'simulated_data.csv', 'Download simul
 # Plots
 #--------------------------------------------
 # Create the 3d header plot
-fig3 = go.Figure()
-fig3 = go.Figure(layout=layout)
-orbit_trace = visualization.plot_orbit_3d(orbit,color='green',name='Classical orbit',dash= 'dot') # convert orbit into scatter3d plotly trace
-fig3.add_trace(orbit_trace)
+with st.spinner("Generating trajectory 3d plot..."):
+    fig3 = go.Figure(layout=layout)
+    orbit_trace = visualization.plot_orbit_3d(orbit, color='green', name='Classical orbit', dash='dot')
+    fig3.add_trace(orbit_trace)
 
-for trace in pos_arrow:
-    fig3.add_trace(trace)
-for trace in vel_arrow:
-    fig3.add_trace(trace)
+    fig3.add_traces(pos_arrow + vel_arrow)
 
-# Add the new trajectory trace with altitude-based coloring
-trajectory_trace = SpacecraftVisualization.create_3d_scatter(eci_coords[0], eci_coords[1], eci_coords[2], heat_rate,name='Simulated trajectory', colorscale='Agsunset')
-fig3.add_trace(trajectory_trace)
-#add colorbar for heat rate (heat_rate)
-# Detect impact
-#--------------------------------------------
-if altitude_event_times.size > 0:
-    fig3.add_trace(go.Scatter3d(x=[eci_coords[0, -1]], y=[eci_coords[1, -1]], z=[eci_coords[2, -1]], mode='markers', marker=dict(size=6, color='purple'), name='Touchdown'))
-    fig3.update_layout(scene=dict(annotations=[dict(x=eci_coords[0, -1], y=eci_coords[1, -1], z=eci_coords[2, -1], text="Touchdown", showarrow=True)]))
-    impact_time = t_sol[-1]
-else:
-    fig3.add_trace(go.Scatter3d(
-        x=[eci_coords[0, -1]],
-        y=[eci_coords[1, -1]],
-        z=[eci_coords[2, -1]],
-        mode='markers',
-        marker=dict(size=6, color='red'),
-        name='Final position'))
+    trajectory_trace = SpacecraftVisualization.create_3d_scatter(eci_coords[0], eci_coords[1], eci_coords[2], heat_rate, name='Simulated trajectory', colorscale='Agsunset')
+    fig3.add_trace(trajectory_trace)
+
+    marker_color = 'purple' if altitude_event_times.size > 0 else 'red'
+    marker_name = 'Touchdown' if altitude_event_times.size > 0 else 'Final position'
+    fig3.add_trace(go.Scatter3d(x=[eci_coords[0, -1]], y=[eci_coords[1, -1]], z=[eci_coords[2, -1]], mode='markers', marker=dict(size=6, color=marker_color), name=marker_name))
+
+    if altitude_event_times.size > 0:
+        fig3.update_layout(scene=dict(annotations=[dict(x=eci_coords[0, -1], y=eci_coords[1, -1], z=eci_coords[2, -1], text="Touchdown", showarrow=True)]))
+
     impact_time = t_sol[-1]
 
-
-# Detect karman line crossing and add a marker for each crossing in the plot
-crossing_points_r_x = np.float64(crossing_points_r[0])
-crossing_points_r_y = np.float64(crossing_points_r[1])
-crossing_points_r_z = np.float64(crossing_points_r[2])
-
-# get list of all points lower than 100km altitude
-altitude_lower_than_100km = []
-for i in range(len(altitude)):
-    if altitude[i] < 100000:
-        altitude_lower_than_100km.append(i)
-
-#--------------------------------------------
-if crossing_points is not None:
-    for crossing_point in crossing_points:
+    if crossing_points is not None:
+        crossing_points_r_x = np.float64(crossing_points_r[0])
+        crossing_points_r_y = np.float64(crossing_points_r[1])
+        crossing_points_r_z = np.float64(crossing_points_r[2])
         fig3.add_trace(go.Scatter3d(x=[crossing_points_r_x], y=[crossing_points_r_y], z=[crossing_points_r_z], mode='markers', marker=dict(size=6, color='orange'), name='Karman line crossing'))
 
-
-# Update gmst0 based on the impact time or the final time of the simulation
-gmst = gmst0 + earth_rotation_deg_speed * impact_time
-with st.spinner("Making things pretty..."):
+    gmst = gmst0 + EARTH_ROT_SPEED_DEG_S * impact_time
     spheroid_mesh = visualization.create_spheroid_mesh()
-    # Recalculate the coastline traces based on the updated gmst0
+    fig3.add_trace(spheroid_mesh)
+
     country_traces = visualization.get_geo_traces(country_feature, gmst)
     coastline_traces = visualization.get_geo_traces(coastline_feature, gmst)
-    fig3.add_trace(spheroid_mesh)
-    for trace in coastline_traces:
-        trace.showlegend = False
-        fig3.add_trace(trace)
-        
-    for trace in country_traces:
-        trace.showlegend = False
-        fig3.add_trace(trace)
-
     lat_lines = visualization.create_latitude_lines(gmst=gmst)
-    for lat_line in lat_lines:
-        lat_line.showlegend = False
-        fig3.add_trace(lat_line)
-
     lon_lines = visualization.create_longitude_lines(gmst=gmst)
-    for lon_line in lon_lines:
-        lon_line.showlegend = False
-        fig3.add_trace(lon_line)
 
+    for trace in country_traces + coastline_traces + lat_lines + lon_lines:
+        trace.showlegend = False
+        fig3.add_trace(trace)
 
-    # set legend to bottom left
     fig3.update_layout(legend=dict(yanchor="bottom", y=0.01, xanchor="left", x=0.01))
-    #zooming in
     fig3.update_layout(scene_camera=dict(eye=dict(x=-0.5, y=0.6, z=1)))
-    # keep axis aspect ratio always equal
     fig3.update_layout(scene_aspectmode='data')
     st.plotly_chart(fig3, use_container_width=True, equal_axes=True)
+
+
 
 # Calculate impact time
 #--------------------------------------------
@@ -406,7 +369,7 @@ else:
 final_time = epoch + TimeDelta(impact_time, format='sec')
 col3.info(f"⏰ The simulation start time was {epoch} and ended on: {final_time}, with a total time simulated of: {duration} (hh,mm,ss)")
 col2.info(f"🛰️ The spacecraft was at an altitude of {altitude[-1]}m at the end of the simulation")
-#--------------------------------------------
+
 
 
 # Begin charts
@@ -420,46 +383,43 @@ Here you can see the altitude of the spacecraft over time. The red line is the t
 In this simulation we are using the COESA76 atmospheric model that considers the Earth's atmosphere to be composed of 6 layers. The first layer is the troposphere, the second layer is the stratosphere, the third layer is the mesosphere, the fourth layer is the thermosphere, the fifth layer is the exosphere, and the sixth layer is the ionosphere. The Karman line is located in the thermosphere layer.
 The model considers the atmosphere from 0 to 1000km, after that the atmosphere is considered to be a vacuum.
 '''
+with st.spinner("Generating altitude vs time graph..."):
+    fig4 = go.Figure()
 
-fig4 = go.Figure()
-# set y axis range to 0 to max altitude
-# add trendline
-z = np.polyfit(t_sol, altitude, 1)
-p = np.poly1d(z)
-# add karman line
-fig4.add_trace(go.Scatter(x=t_sol, y=[100000]*len(t_sol), mode='lines', line=dict(color='rgba(255,255,255,0.5)', width=2, dash= 'dot'), name='Karman Line'))
-# add the main layers of the atmosphere as rectangles
-fig4.add_shape(type='rect', x0=0, x1=max(t_sol), y0=0, y1=11000, yref='y', xref='x', line=dict(color='rgba(255, 0, 0, 0)', width=0), fillcolor='rgba(196, 245, 255, 1)', opacity=0.3, name='Troposphere')
-fig4.add_shape(type='rect', x0=0, x1=max(t_sol), y0=11000, y1=47000, yref='y', xref='x', line=dict(color='rgba(255, 0, 0, 0)', width=0), fillcolor='rgba(0, 212, 255, 1)', opacity=0.3, name='Stratosphere')
-fig4.add_shape(type='rect', x0=0, x1=max(t_sol), y0=47000, y1=86000, yref='y', xref='x', line=dict(color='rgba(255, 0, 0, 0)', width=0), fillcolor='rgba(4, 132, 202, 1)', opacity=0.3, name='Mesosphere')
-fig4.add_shape(type='rect', x0=0, x1=max(t_sol), y0=86000, y1=690000, yref='y', xref='x', line=dict(color='rgba(255, 0, 0, 0)', width=0), fillcolor='rgba(9, 9, 121, 1)', opacity=0.3, name='Thermosphere')
-fig4.add_shape(type='rect', x0=0, x1=max(t_sol), y0=690000, y1=1000000, yref='y', xref='x', line=dict(color='rgba(255, 0, 0, 0)', width=0), fillcolor='rgba(2, 1, 42, 1)', opacity=0.3, name='Exosphere')
-# Add layer names as annotations
-fig4.add_annotation(x=0, y=11000, text='Troposphere', xanchor='left', yanchor='bottom', font=dict(size=10), showarrow=False)
-fig4.add_annotation(x=0, y=47000, text='Stratosphere', xanchor='left', yanchor='bottom', font=dict(size=10), showarrow=False)
-fig4.add_annotation(x=0, y=86000, text='Mesosphere', xanchor='left', yanchor='bottom', font=dict(size=10), showarrow=False)
-fig4.add_annotation(x=0, y=690000, text='Thermosphere', xanchor='left', yanchor='bottom', font=dict(size=10), showarrow=False)
-fig4.add_annotation(x=0, y=1000000, text='Exosphere', xanchor='left', yanchor='bottom', font=dict(size=10), showarrow=False)
+    z = np.polyfit(t_sol, altitude, 1)
+    p = np.poly1d(z)
 
-fig4.add_trace(go.Scatter(x=t_sol, y=altitude, mode='lines', line=dict(color='#ff00f7', width=2), name='Altitude (m)'))
-fig4.add_trace(go.Scatter(x=t_sol, y=p(t_sol), mode='lines', line=dict(color='cyan', width=2, dash= 'dot'), name=f'Trendline{p}'))
+    atmosphere_layers = [
+        (0, 11000, 'rgba(196, 245, 255, 1)', 'Troposphere'),
+        (11000, 47000, 'rgba(0, 212, 255, 1)', 'Stratosphere'),
+        (47000, 86000, 'rgba(4, 132, 202, 1)', 'Mesosphere'),
+        (86000, 690000, 'rgba(9, 9, 121, 1)', 'Thermosphere'),
+        (690000, 1000000, 'rgba(2, 1, 42, 1)', 'Exosphere'),
+    ]
 
-if altitude_event_times.size > 0:
-    # Add touchdown line
-    fig4.add_trace(go.Scatter(x=[touchdown_time], y=np.linspace(0, max(altitude), len(t_sol)), mode='lines', line=dict(color='rgba(0, 255, 0, 0.5)', width=2, dash='dot'), name='Touchdown'))
-    # Add annotation for touchdown
-    fig4.add_annotation(x=[touchdown_time], y=max(altitude), text='Touchdown', showarrow=True, font=dict(size=10), xanchor='center', yshift=10)
+    for layer_y0, layer_y1, layer_color, layer_name in atmosphere_layers:
+        fig4.add_shape(type='rect', x0=0, x1=max(t_sol), y0=layer_y0, y1=layer_y1, yref='y', xref='x', line=dict(color='rgba(255, 0, 0, 0)', width=0), fillcolor=layer_color, opacity=0.3)
+        fig4.add_annotation(x=0, y=layer_y1, text=layer_name, xanchor='left', yanchor='bottom', font=dict(size=10), showarrow=False)
 
-# show trendline equation in graph legend of trendline
-if crossing_points is not None:
-    for idx, crossing_point in enumerate(crossing_points):
-        fig4.add_shape(type='line', x0=crossing_point, x1=crossing_point, y0=0, y1=max(altitude), yref='y', xref='x', line=dict(color='rgba(255, 0, 0, 0.5)', width=2, dash='dot'))
-        fig4.add_annotation(x=crossing_point, y=max(altitude), text=f'Crossing Karman line {idx+1}', showarrow=True, font=dict(size=10), xanchor='center', yshift=10)
+    fig4.add_trace(go.Scatter(x=t_sol, y=[100000]*len(t_sol), mode='lines', line=dict(color='rgba(255,255,255,0.5)', width=2, dash='dot'), name='Karman Line'))
+    fig4.add_trace(go.Scatter(x=t_sol, y=altitude, mode='lines', line=dict(color='#ff00f7', width=2), name='Altitude (m)'))
+    fig4.add_trace(go.Scatter(x=t_sol, y=p(t_sol), mode='lines', line=dict(color='cyan', width=2, dash='dot'), name=f'Trendline{p}'))
 
-fig4.update_yaxes(range=[0, max(altitude)])
-fig4.update_layout(xaxis_title='Time (s)', yaxis_title='Altitude (m)', legend=dict(y=1.3, yanchor="top", xanchor="left", x=0, orientation="h"), hovermode="x unified")
-st.plotly_chart(fig4, use_container_width=True)
-#--------------------------------------------
+    if altitude_event_times.size > 0:
+        fig4.add_trace(go.Scatter(x=[touchdown_time], y=np.linspace(0, max(altitude), len(t_sol)), mode='lines', line=dict(color='rgba(0, 255, 0, 0.5)', width=2, dash='dot'), name='Touchdown'))
+        fig4.add_annotation(x=[touchdown_time], y=max(altitude), text='Touchdown', showarrow=True, font=dict(size=10), xanchor='center', yshift=10)
+
+    if crossing_points is not None:
+        for idx, crossing_point in enumerate(crossing_points):
+            fig4.add_shape(type='line', x0=crossing_point, x1=crossing_point, y0=0, y1=max(altitude), yref='y', xref='x', line=dict(color='rgba(255, 0, 0, 0.5)', width=2, dash='dot'))
+            fig4.add_annotation(x=crossing_point, y=max(altitude), text=f'Crossing Karman line {idx+1}', showarrow=True, font=dict(size=10), xanchor='center', yshift=10)
+
+    fig4.update_yaxes(range=[0, max(altitude)])
+    fig4.update_layout(xaxis_title='Time (s)', yaxis_title='Altitude (m)', legend=dict(y=1.3, yanchor="top", xanchor="left", x=0, orientation="h"), hovermode="x unified")
+    st.plotly_chart(fig4, use_container_width=True)
+
+
+
 
 # Plot the velocity vs time
 #--------------------------------------------
@@ -468,52 +428,45 @@ st.subheader("Velocity vs Time")
 Here you can see the velocity of the spacecraft both in absolute magnitude as well as in the x, y, and z directions.
 One particularly useful measure is the ground velocity vs the orbital velocity.
 '''
-fig5 = go.Figure()
-g_velx, g_vely, g_velz = sol.y[3:6]
-# Calculate the GMST for each time step
-gmst_t = gmst0 + sol.t * earth_rotation_deg_speed
+with st.spinner("Generating Velocity vs time graph..."):
+    fig5 = go.Figure()
+    g_velx, g_vely, g_velz = sol.y[3:6]
+    gmst_t = gmst0 + sol.t * EARTH_ROT_SPEED_DEG_S
 
-# Calculate the orbital velocities (in ECI)
-orbital_velocities = [np.linalg.norm(sol.y[3:6, i]) for i in range(sol.t.size)]
+    orbital_velocities = np.linalg.norm(sol.y[3:6], axis=0)
+    
+    v_ecef = np.array([CoordinateConverter.eci_to_ecef(g_velx[i], g_vely[i], g_velz[i], gmst_t[i]) for i in range(sol.t.size)])
+    w_ECEF = np.array([0, 0, EARTH_ROT_SPEED_DEG_S]) * np.pi / 180
 
-# make sure that in right unit
-v_ecef = np.array([CoordinateConverter.eci_to_ecef(g_velx[i], g_vely[i], g_velz[i], gmst_t[i]) for i in range(sol.t.size)])
-w_ECEF = np.array([0, 0, earth_rotation_deg_speed]) * np.pi / 180  # Convert to rad/s
+    earth_rotational_velocities = np.array([[-EARTH_ROT_SPEED_M_S * np.cos(np.deg2rad(lat)) * np.sin(np.deg2rad(lon)),
+                                            EARTH_ROT_SPEED_M_S * np.cos(np.deg2rad(lat)) * np.cos(np.deg2rad(lon)),
+                                            0] for lon in gmst_t])
 
-# Calculate the Earth's rotational velocities in m/s
-earth_rotational_velocities = [np.array([-earth_rotational_speed * np.cos(np.deg2rad(lat)) * np.sin(np.deg2rad(lon)),
-                                         earth_rotational_speed * np.cos(np.deg2rad(lat)) * np.cos(np.deg2rad(lon)),
-                                         0]) for lon in gmst_t]
+    ground_velocities = v_ecef - earth_rotational_velocities
+    ground_velocity_magnitudes = np.linalg.norm(ground_velocities, axis=1)
 
-# Calculate the ground velocities
-ground_velocities = np.array([v_ecef[i] - earth_rotational_velocities[i] for i in range(sol.t.size)])
+    max_velocity = max(max(ground_velocity_magnitudes), max(orbital_velocities), max(sol.y[3, :]), max(sol.y[4, :]), max(sol.y[5, :]))
+    min_velocity = min(min(ground_velocity_magnitudes), min(orbital_velocities), min(sol.y[3, :]), min(sol.y[4, :]), min(sol.y[5, :]))
 
-# Calculate the magnitude of the ground velocities
-ground_velocity_magnitudes = [np.linalg.norm(ground_velocities[i]) for i in range(sol.t.size)]
+    fig5.add_trace(go.Scatter(x=t_sol, y=ground_velocity_magnitudes, mode='lines', line=dict(color='Purple', width=2), name='Ground Velocity'))
+    fig5.add_trace(go.Scatter(x=t_sol, y=orbital_velocities, mode='lines', line=dict(color='white', width=2), opacity=0.5, name='Orbital Velocity'))
+    fig5.add_trace(go.Scatter(x=t_sol, y=sol.y[3, :], mode='lines', line=dict(color='blue', width=2), name='X Velocity'))
+    fig5.add_trace(go.Scatter(x=t_sol, y=sol.y[4, :], mode='lines', line=dict(color='red', width=2), name='Y Velocity'))
+    fig5.add_trace(go.Scatter(x=t_sol, y=sol.y[5, :], mode='lines', line=dict(color='green', width=2), name='Z Velocity'))
 
-max_velocity = max(max(ground_velocity_magnitudes), max(orbital_velocities),max(sol.y[3, :]), max(sol.y[4, :]), max(sol.y[5, :]))
-min_velocity = min(min(ground_velocity_magnitudes), min(orbital_velocities),min(sol.y[3, :]), min(sol.y[4, :]), min(sol.y[5, :]))
+    if crossing_points is not None:
+        for idx, crossing_point in enumerate(crossing_points):
+            fig5.add_shape(type='line', x0=crossing_point, x1=crossing_point, y0=min_velocity, y1=max_velocity, yref='y', xref='x', line=dict(color='rgba(255, 0, 0, 0.5)', width=2, dash='dot'))
+            fig5.add_annotation(x=crossing_point, y=max_velocity, text=f'Crossing Karman line {idx+1}', showarrow=True, font=dict(size=10), xanchor='center', yshift=10)
 
-# add it to the plot
-fig5.add_trace(go.Scatter(x=t_sol, y=ground_velocity_magnitudes, mode='lines', line=dict(color='Purple', width=2), name='Ground Velocity'))
-fig5.add_trace(go.Scatter(x=t_sol, y=orbital_velocities, mode='lines', line=dict(color='white', width=2), opacity=0.5, name='Orbital Velocity'))
-fig5.add_trace(go.Scatter(x=t_sol, y=sol.y[3, :], mode='lines', line=dict(color='blue', width=2), name='X Velocity'))
-fig5.add_trace(go.Scatter(x=t_sol, y=sol.y[4, :], mode='lines', line=dict(color='red', width=2), name='Y Velocity'))
-fig5.add_trace(go.Scatter(x=t_sol, y=sol.y[5, :], mode='lines', line=dict(color='green', width=2), name='Z Velocity'))
-if crossing_points is not None:
-    for idx, crossing_point in enumerate(crossing_points):
-        fig5.add_shape(type='line', x0=crossing_point, x1=crossing_point, y0=min_velocity, y1=max_velocity, yref='y', xref='x', line=dict(color='rgba(255, 0, 0, 0.5)', width=2, dash='dot'))
-        fig5.add_annotation(x=crossing_point, y=max_velocity, text=f'Crossing Karman line {idx+1}', showarrow=True, font=dict(size=10), xanchor='center', yshift=10)
+    if altitude_event_times.size > 0:
+        fig5.add_shape(type='line', x0=[touchdown_time], x1=[touchdown_time], y0=min_velocity, y1=max_velocity, yref='y', xref='x', line=dict(color='rgba(0, 255, 0, 0.5)', width=2, dash='dot'))
+        fig5.add_annotation(x=[touchdown_time], y=max_velocity, text='Touchdown', showarrow=True, font=dict(size=10), xanchor='center', yshift=10)
 
-if altitude_event_times.size > 0:
-    # Add touchdown line
-    fig5.add_shape(type='line', x0=[touchdown_time], x1=[touchdown_time], y0=min_velocity, y1=max_velocity, yref='y', xref='x', line=dict(color='rgba(0, 255, 0, 0.5)', width=2, dash='dot'))
-    # Add annotation for touchdown
-    fig5.add_annotation(x=[touchdown_time], y=max_velocity, text='Touchdown', showarrow=True, font=dict(size=10), xanchor='center', yshift=10)
+    fig5.update_layout(xaxis_title='Time (s)', yaxis_title='Velocity (m/s)',legend=dict(y=1.2, yanchor="top", xanchor="left", x=0, orientation="h"),hovermode="x unified")
+    st.plotly_chart(fig5, use_container_width=True)
 
-fig5.update_layout(xaxis_title='Time (s)', yaxis_title='Velocity (m/s)',legend=dict(y=1.2, yanchor="top", xanchor="left", x=0, orientation="h"),hovermode="x unified")
-st.plotly_chart(fig5, use_container_width=True)
-#--------------------------------------------
+
 
 # Plot the downrange vs altitude
 #--------------------------------------------
@@ -524,32 +477,25 @@ Downrange is being measured in absolute distance from the starting point.
 '''
 # Calculate downrange using ecef_distance function
 # Begin plotting
-fig6 = go.Figure()
-fig6.add_trace(go.Scatter(x=downrange, y=altitude, mode='lines', line=dict(color='purple', width=2), name='Altitude'))
-# add karman line at 100km altitude
-fig6.add_trace(go.Scatter(x=[0, max(downrange)], y=[100000]*2, mode='lines', line=dict(color='rgba(255,255,255,0.5)', width=2, dash= 'dot'), name='Karman Line'))
-fig6.add_shape(type='rect', x0=0, x1=max(downrange), y0=0, y1=11000, yref='y', xref='x', line=dict(color='rgba(255, 0, 0, 0)', width=0), fillcolor='rgba(196, 245, 255, 1)', opacity=0.3, name='Troposphere')
-fig6.add_shape(type='rect', x0=0, x1=max(downrange), y0=11000, y1=47000, yref='y', xref='x', line=dict(color='rgba(255, 0, 0, 0)', width=0), fillcolor='rgba(0, 212, 255, 1)', opacity=0.3, name='Stratosphere')
-fig6.add_shape(type='rect', x0=0, x1=max(downrange), y0=47000, y1=86000, yref='y', xref='x', line=dict(color='rgba(255, 0, 0, 0)', width=0), fillcolor='rgba(4, 132, 202, 1)', opacity=0.3, name='Mesosphere')
-fig6.add_shape(type='rect', x0=0, x1=max(downrange), y0=86000, y1=690000, yref='y', xref='x', line=dict(color='rgba(255, 0, 0, 0)', width=0), fillcolor='rgba(9, 9, 121, 1)', opacity=0.3, name='Thermosphere')
-fig6.add_shape(type='rect', x0=0, x1=max(downrange), y0=690000, y1=1000000, yref='y', xref='x', line=dict(color='rgba(255, 0, 0, 0)', width=0), fillcolor='rgba(2, 1, 42, 1)', opacity=0.3, name='Exosphere')
-# Add layer names as annotations
-fig6.add_annotation(x=0, y=11000, text='Troposphere', xanchor='left', yanchor='bottom', font=dict(size=10), showarrow=False)
-fig6.add_annotation(x=0, y=47000, text='Stratosphere', xanchor='left', yanchor='bottom', font=dict(size=10), showarrow=False)
-fig6.add_annotation(x=0, y=86000, text='Mesosphere', xanchor='left', yanchor='bottom', font=dict(size=10), showarrow=False)
-fig6.add_annotation(x=0, y=690000, text='Thermosphere', xanchor='left', yanchor='bottom', font=dict(size=10), showarrow=False)
-fig6.add_annotation(x=0, y=1000000, text='Exosphere', xanchor='left', yanchor='bottom', font=dict(size=10), showarrow=False)
+with st.spinner("Generating Downrange vs Altitude graph..."):
+    fig6 = go.Figure()
+    fig6.add_trace(go.Scatter(x=downrange, y=altitude, mode='lines', line=dict(color='purple', width=2), name='Altitude'))
+    fig6.add_trace(go.Scatter(x=[0, max(downrange)], y=[100000]*2, mode='lines', line=dict(color='rgba(255,255,255,0.5)', width=2, dash= 'dot'), name='Karman Line'))
 
-if crossing_points_downrange is not None:
-    for idx, crossing_point in enumerate(crossing_points_downrange):
-        fig6.add_shape(type='line', x0=crossing_point, x1=crossing_point, y0=0, y1=max(altitude), yref='y', xref='x', line=dict(color='rgba(255, 0, 0, 0.5)', width=2, dash='dot'))
-        fig6.add_annotation(x=crossing_point, y=max(altitude), text=f'Crossing Karman line {idx+1}', showarrow=True, font=dict(size=10), xanchor='center', yshift=10)
+    for layer in atmosphere_layers:
+        fig6.add_shape(type='rect', x0=0, x1=max(downrange), y0=layer[0], y1=layer[1], yref='y', xref='x', line=dict(color='rgba(255, 0, 0, 0)', width=0), fillcolor=layer[2], opacity=0.3, name=layer[3])
+        fig6.add_annotation(x=0, y=layer[1], text=layer[3], xanchor='left', yanchor='bottom', font=dict(size=10), showarrow=False)
 
-fig6.update_yaxes(range=[0, max(altitude)])
-fig6.update_layout(legend=dict(y=1.2, yanchor="top", xanchor="left", x=0, orientation="h"))
-fig6.update_layout(xaxis_title='Downrange (m)', yaxis_title='Altitude (m)', hovermode="x unified")
-st.plotly_chart(fig6, use_container_width=True)
-#--------------------------------------------
+    if crossing_points_downrange is not None:
+        for idx, crossing_point in enumerate(crossing_points_downrange):
+            fig6.add_shape(type='line', x0=crossing_point, x1=crossing_point, y0=0, y1=max(altitude), yref='y', xref='x', line=dict(color='rgba(255, 0, 0, 0.5)', width=2, dash='dot'))
+            fig6.add_annotation(x=crossing_point, y=max(altitude), text=f'Crossing Karman line {idx+1}', showarrow=True, font=dict(size=10), xanchor='center', yshift=10)
+
+    fig6.update_yaxes(range=[0, max(altitude)])
+    fig6.update_layout(legend=dict(y=1.2, yanchor="top", xanchor="left", x=0, orientation="h"))
+    fig6.update_layout(xaxis_title='Downrange (m)', yaxis_title='Altitude (m)', hovermode="x unified")
+    st.plotly_chart(fig6, use_container_width=True)
+
 
 
 #Plot a groundtrack
@@ -571,7 +517,7 @@ longitudes = []
 
 for i in range(len(sol.t)):
     # Update gmst for each time step of the simulation
-    gmst = (gmst0 + earth_rotation_deg_speed * sol.t[i]) * np.pi / 180  # Convert gmst to radians
+    gmst = (gmst0 + EARTH_ROT_SPEED_DEG_S * sol.t[i]) * np.pi / 180  # Convert gmst to radians
 
     # Convert the position data into ECEF coordinates
     ecef_coords = convert.eci_to_ecef(sol.y[0, i], sol.y[1, i], sol.y[2, i], gmst)
@@ -592,75 +538,75 @@ for i in range(len(sol.t)):
 st.info(f'Your spacecraft was last heard of at these coordinates: {lat_lon[0]:.2f}°, {lat_lon[1]:.2f}°, and {lat_lon_alt[2]:.2f} m above sea level.')
 
 # Calculate the solar zenith angle at the final time considering the Earth's tilt
-sza, lat_grid, lon_grid = convert.solar_zenith_angle(final_time)
-# Calculate the night side overlay coordinates
-night_side_lons, night_side_lats = convert.night_side_coordinates(sza, lat_grid, lon_grid)
+# sza, lat_grid, lon_grid = convert.solar_zenith_angle(final_time)
+# # Calculate the night side overlay coordinates
+# night_side_lons, night_side_lats = convert.night_side_coordinates(sza, lat_grid, lon_grid)
 
-# Add the night side overlay to the map
-fig7.add_trace(go.Scattergeo(
-    lon=night_side_lons,
-    lat=night_side_lats,
-    mode='markers',
-    marker=dict(color='rgba(0, 0, 70, 1)', size=3),
-    hoverinfo='none',  # Disable hover effect
-    showlegend=False,
-    name='Night side',
-))
+# # Add the night side overlay to the map
+# fig7.add_trace(go.Scattergeo(
+#     lon=night_side_lons,
+#     lat=night_side_lats,
+#     mode='markers',
+#     marker=dict(color='rgba(0, 0, 70, 1)', size=3),
+#     hoverinfo='none',  # Disable hover effect
+#     showlegend=False,
+#     name='Night side',
+# ))
+with st.spinner("Generating Groundtrack map..."):
+    # Add a single trace for the ground track
+    fig7.add_trace(go.Scattergeo(
+        lon=longitudes,
+        lat=latitudes,
+        mode='lines+markers',
+        marker=dict(color='red', size=2),
+        # map resolution
+        showlegend=True,
+        name='Groundtrack',
+    ))
 
-# Add a single trace for the ground track
-fig7.add_trace(go.Scattergeo(
-    lon=longitudes,
-    lat=latitudes,
-    mode='lines+markers',
-    marker=dict(color='red', size=2),
-    # map resolution
-    showlegend=True,
-    name='Groundtrack',
-))
+    # add point for starting point and another for final position
+    final_lat = latitudes[-1]
+    final_lon = longitudes[-1]
+    fig7.add_trace(go.Scattergeo(
+        lon=[final_lon],
+        lat=[final_lat],
+        mode='markers',
+        marker=dict(color='orange', size=10),
+        showlegend=True,
+        name='Final position'
+    ))
+    fig7.add_trace(go.Scattergeo(
+        lon=[longitudes[0]],
+        lat=[latitudes[0]],
+        mode='markers',
+        marker=dict(color='green', size=10),
+        showlegend=True,
+        name='Initial position'
+    ))
 
-# add point for starting point and another for final position
-final_lat = latitudes[-1]
-final_lon = longitudes[-1]
-fig7.add_trace(go.Scattergeo(
-    lon=[final_lon],
-    lat=[final_lat],
-    mode='markers',
-    marker=dict(color='orange', size=10),
-    showlegend=True,
-    name='Final position'
-))
-fig7.add_trace(go.Scattergeo(
-    lon=[longitudes[0]],
-    lat=[latitudes[0]],
-    mode='markers',
-    marker=dict(color='green', size=10),
-    showlegend=True,
-    name='Initial position'
-))
-
-fig7.update_layout(
-    autosize=True,
-    margin=dict(l=0, r=0, t=50, b=0),
-    height=800,
-    geo=dict(
-        showland=True,
-        showcountries=True,
-        showocean=True,
-        showlakes=True,
-        showrivers=True,
-        countrywidth=0.5,
-        landcolor='rgba(0, 110, 243, 0.2)',
-        oceancolor='rgba(0, 0, 255, 0.1)',
-        bgcolor="rgba(0, 0, 0, 0)",
-        coastlinecolor='blue',
-        projection=dict(type='equirectangular'),
-        lonaxis=dict(range=[-180, 180], showgrid=True, gridwidth=0.5, gridcolor='rgba(0, 0, 255, 0.5)'),
-        lataxis=dict(range=[-90, 90], showgrid=True, gridwidth=0.5, gridcolor='rgba(0, 0, 255, 0.5)'),
+    fig7.update_layout(
+        autosize=True,
+        margin=dict(l=0, r=0, t=50, b=0),
+        height=800,
+        geo=dict(
+            showland=True,
+            showcountries=True,
+            showocean=True,
+            showlakes=True,
+            showrivers=True,
+            countrywidth=0.5,
+            landcolor='rgba(0, 110, 243, 0.2)',
+            oceancolor='rgba(0, 0, 255, 0.1)',
+            bgcolor="rgba(0, 0, 0, 0)",
+            coastlinecolor='blue',
+            projection=dict(type='equirectangular'),
+            lonaxis=dict(range=[-180, 180], showgrid=True, gridwidth=0.5, gridcolor='rgba(0, 0, 255, 0.5)'),
+            lataxis=dict(range=[-90, 90], showgrid=True, gridwidth=0.5, gridcolor='rgba(0, 0, 255, 0.5)'),
+        )
     )
-)
-fig7.update_geos(resolution=110)
-fig7.update_layout(legend=dict(y=1.1, yanchor="top", xanchor="left", x=0, orientation="h"))
-st.plotly_chart(fig7, use_container_width=True)
+    fig7.update_geos(resolution=110)
+    fig7.update_layout(legend=dict(y=1.1, yanchor="top", xanchor="left", x=0, orientation="h"))
+    st.plotly_chart(fig7, use_container_width=True)
 #--------------------------------------------------------------------------------
 
 # Plot an acceleration vs time graph

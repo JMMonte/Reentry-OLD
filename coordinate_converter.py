@@ -1,8 +1,18 @@
 import numpy as np
 from astropy import units as u
-from poliastro.bodies import Earth
-from astropy.coordinates import get_sun
+# from astropy.coordinates import get_sun
 from astropy.coordinates import EarthLocation, AltAz
+
+#constants
+#Earth
+EARTH_MU = 398600441800000.0  # gravitational parameter of Earth in m^3/s^2
+EARTH_R = 6378137.0  # radius of Earth in m
+EARTH_R_KM = 6378.137  # radius of Earth in m
+EARTH_R_POLAR = 6356752.3142  # polar radius of Earth in m
+EARTH_OMEGA = 7.292114146686322e-05  # Earth rotation speed in rad/s
+EARTH_J2 = 0.00108263 # J2 of Earth
+EARTH_MASS = 5.972e24  # Mass (kg)
+
 
 class CoordinateConverter:
     @staticmethod
@@ -46,7 +56,7 @@ class CoordinateConverter:
 
     
     @staticmethod
-    def geo_to_spheroid(lat, lon, alt=0, R_equatorial=Earth.R.to(u.m).value, R_polar=Earth.R_polar.to(u.m).value):
+    def geo_to_spheroid(lat, lon, alt=0, R_equatorial=EARTH_R, R_polar=EARTH_R_POLAR):
         '''
         Converts geodetic coordinates to spheroid coordinates
         :param lat: latitude in degrees
@@ -74,7 +84,7 @@ class CoordinateConverter:
         :param alt: altitude in meters
         :return: x, y, z coordinates in ECEF frame
         '''
-        a = Earth.R.to(u.m).value  # Earth's equatorial radius in meters (WGS-84)
+        a = EARTH_R  # Earth's equatorial radius in meters (WGS-84)
         f = 1 / 298.257223563  # Earth's flattening factor (WGS-84)
         e2 = 2 * f - f**2  # Earth's eccentricity squared (WGS-84)
 
@@ -94,7 +104,7 @@ class CoordinateConverter:
         :param z: z-coordinate in ECEF frame
         :return: latitude, longitude, and altitude in that order
         '''
-        a = Earth.R.to(u.m).value  # Earth's equatorial radius in meters (WGS-84)
+        a = EARTH_R  # Earth's equatorial radius in meters (WGS-84)
         f = 1 / 298.257223563  # Earth's flattening factor (WGS-84)
         e2 = 2 * f - f**2  # Earth's eccentricity squared (WGS-84)
 
@@ -131,22 +141,6 @@ class CoordinateConverter:
         return np.array([v_east, v_north, v_up])
     
     @staticmethod
-    def body_rotation_speed(attractor,output='deg/s'):
-        '''
-        Returns the rotation speed of a body as float, given an output unit.
-        :param attractor: name of the body
-        :param output: output units
-        :return: rotation period of the body in the given output units
-        '''
-        output_metrics = {
-            'deg/s': 360/attractor.rotational_period.to(u.s).value,
-            'rad/s': 2*np.pi/attractor.rotational_period.to(u.s).value,
-            'rpm': 60/attractor.rotational_period.to(u.s).value,
-            'm/s': attractor.R.to(u.m).value * np.pi * 2 / attractor.rotational_period.to(u.s).value,
-            }
-        return output_metrics[output]
-    
-    @staticmethod
     def ecef_distance(x1, y1, z1, x2, y2, z2):
         '''
         Returns the distance between two points in ECEF coordinates
@@ -159,22 +153,22 @@ class CoordinateConverter:
         :return: distance between the two points
         '''
         return np.sqrt((x2 - x1)**2 + (y2 - y1)**2 + (z2 - z1)**2)
-    @staticmethod
-    def solar_zenith_angle(final_time):
-        sun_coord = get_sun(final_time)
+    # @staticmethod
+    # def solar_zenith_angle(final_time):
+    #     sun_coord = get_sun(final_time)
         
-        lats = np.linspace(-90, 90, num=91)  # Reduced number of points
-        lons = np.linspace(-180, 180, num=181)  # Reduced number of points
+    #     lats = np.linspace(-90, 90, num=91)  # Reduced number of points
+    #     lons = np.linspace(-180, 180, num=181)  # Reduced number of points
         
-        lat_grid, lon_grid = np.meshgrid(lats, lons)
+    #     lat_grid, lon_grid = np.meshgrid(lats, lons)
         
-        location = EarthLocation.from_geodetic(lon_grid, lat_grid, height=0)
-        altaz_frame = AltAz(obstime=final_time, location=location)
-        altaz_sun = sun_coord.transform_to(altaz_frame)
+    #     location = EarthLocation.from_geodetic(lon_grid, lat_grid, height=0)
+    #     altaz_frame = AltAz(obstime=final_time, location=location)
+    #     altaz_sun = sun_coord.transform_to(altaz_frame)
 
-        sza = 90 - altaz_sun.alt.deg
+    #     sza = 90 - altaz_sun.alt.deg
         
-        return sza, lat_grid, lon_grid
+    #     return sza, lat_grid, lon_grid
     
     @staticmethod
     def night_side_coordinates(sza, lat_grid, lon_grid):
