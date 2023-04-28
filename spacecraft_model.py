@@ -123,9 +123,10 @@ class SpacecraftModel:
         # Compute drag acceleration
         altitude = r_norm - self.R
         if 0 <= altitude <= 1e6:
-            a_drag,rho = self.atmospheric_drag(y, method='drag_exponential')
+            a_drag, rho = self.atmospheric_drag(y, method='drag_exponential')
         else:
-            a_drag,rho = np.zeros(3)
+            a_drag = np.zeros(3)
+            rho = 0
 
         # In-place addition of accelerations
         a_total = a_grav + a_J2 + a_moon + a_sun + a_drag

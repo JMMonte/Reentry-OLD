@@ -9,12 +9,12 @@ import datetime
 import plotly.graph_objects as go
 import pandas as pd
 import numpy as np
-from poliastro.bodies import Earth, Moon
+from poliastro.bodies import Earth
 from poliastro.twobody import Orbit
 from spacecraft_model import SpacecraftModel
 from spacecraft_visualization import SpacecraftVisualization
 import streamlit as st
-from poliastro.core.elements import rv_pqw
+
 
 # Special functions
 #--------------------------------------------

@@ -4,7 +4,6 @@ from poliastro.bodies import Earth
 from coordinate_converter import CoordinateConverter
 import astropy.units as u
 from astropy.coordinates import CartesianRepresentation
-import colorsys
 
 class SpacecraftVisualization:
     @staticmethod
