@@ -384,7 +384,7 @@ with st.spinner("Making things pretty..."):
 st.subheader("Crash Detection")
 col2, col3 = st.columns(2)
 duration = datetime.timedelta(seconds=impact_time.astype(float))
-if altitude_event_times.size > 0:
+if altitude_event_times > 0:
     # get location of impact in ECEF
     impact_point_ecef = np.array([eci_coords[0, -1], eci_coords[1, -1], eci_coords[2, -1]])
     # get location of impact in lat, lon, alt
@@ -395,8 +395,11 @@ if altitude_event_times.size > 0:
     impact_point_alt = impact_point_lat_lon_alt[2]
     col2.warning(f"⚠️ Touchdown detected {duration} (hh,mm,ss) after start intial time, experiencing a maximum deceleration of {max(gs_acceleration)} G")
     col2.info(f"📍 Touchdown detected at {impact_point_lat}ºN, {impact_point_lon}ºE")
+elif len(crossing_points) > 0:
+    col2.warning(f"⚠️ You're a fireball! Crossing the Karman line at {crossing_points} seconds after start intial time")
+
 else:
-    col2.success("No reentry and landing detected")
+    col2.success("Still flying high")
     # calculate final time of simulation using astropy
 
 
@@ -584,6 +587,9 @@ for i in range(len(sol.t)):
 
     latitudes.append(lat_lon[0])
     longitudes.append(lat_lon[1])
+
+# show last position coordinates
+st.info(f'Your spacecraft was last heard of at these coordinates: {lat_lon[0]:.2f}°, {lat_lon[1]:.2f}°, and {lat_lon_alt[2]:.2f} m above sea level.')
 
 # Calculate the solar zenith angle at the final time considering the Earth's tilt
 sza, lat_grid, lon_grid = convert.solar_zenith_angle(final_time)
