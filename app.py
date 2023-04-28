@@ -172,7 +172,7 @@ with st.sidebar:
 # Run the simulation
 
 def update_progress(progress, elapsed_time):
-    progress_bar.progress(progress,f"🔥 Burning some heatshields... {elapsed_time:.2f} seconds elapsed")
+    progress_bar.progress(progress,f"🔥 Cooking your TPS... {elapsed_time:.2f} seconds elapsed")
 progress_bar = st.empty()
 
 if run_simulation:
@@ -355,6 +355,20 @@ with st.spinner("Generating trajectory 3d plot..."):
 st.subheader("Crash Detection")
 col2, col3 = st.columns(2)
 duration = datetime.timedelta(seconds=impact_time.astype(float))
+g_velx, g_vely, g_velz = sol.y[3:6]
+gmst_t = gmst0 + sol.t * EARTH_ROT_SPEED_DEG_S
+
+orbital_velocities = np.linalg.norm(sol.y[3:6], axis=0)
+
+v_ecef = np.array([CoordinateConverter.eci_to_ecef(g_velx[i], g_vely[i], g_velz[i], gmst_t[i]) for i in range(sol.t.size)])
+w_ECEF = np.array([0, 0, EARTH_ROT_SPEED_DEG_S]) * np.pi / 180
+
+earth_rotational_velocities = np.array([[-EARTH_ROT_SPEED_M_S * np.cos(np.deg2rad(lat)) * np.sin(np.deg2rad(lon)),
+                                        EARTH_ROT_SPEED_M_S * np.cos(np.deg2rad(lat)) * np.cos(np.deg2rad(lon)),
+                                        0] for lon in gmst_t])
+
+ground_velocities = v_ecef - earth_rotational_velocities
+ground_velocity_magnitudes = np.linalg.norm(ground_velocities, axis=1)
 if altitude_event_times > 0:
     # get location of impact in ECEF
     impact_point_ecef = np.array([eci_coords[0, -1], eci_coords[1, -1], eci_coords[2, -1]])
@@ -364,7 +378,7 @@ if altitude_event_times > 0:
     impact_point_lat = impact_point_lat_lon_alt[0]
     impact_point_lon = impact_point_lat_lon_alt[1]
     impact_point_alt = impact_point_lat_lon_alt[2]
-    col2.warning(f"⚠️ Touchdown detected {duration} (hh,mm,ss) after start intial time, experiencing a maximum deceleration of {max(gs_acceleration)} G")
+    col2.warning(f"⚠️ Touchdown detected {duration} (hh,mm,ss) after start intial time, experiencing a maximum deceleration of {max(gs_acceleration):.2f} G")
     col2.info(f"📍 Touchdown detected at {impact_point_lat}ºN, {impact_point_lon}ºE")
 elif len(crossing_points) > 0:
     col2.warning(f"⚠️ You're a fireball! Crossing the Karman line at {crossing_points} seconds after start intial time")
@@ -375,10 +389,9 @@ else:
 
 
 final_time = epoch + TimeDelta(impact_time, format='sec')
-col2.warning(f"🌡️ The spacecraft reached a heat rate of {max(heat_rate)} W/m^2 during simulation. You can see what parts of the orbit were the hottest in the 3d plot above")
+col2.warning(f"🌡️ The spacecraft reached a heat rate of {max(heat_rate):.2f} W/m^2 during simulation. You can see what parts of the orbit were the hottest in the 3d plot above👆.")
 col3.info(f"⏰ The simulation start time was {epoch} and ended on: {final_time}, with a total time simulated of: {duration} (hh,mm,ss)")
-col2.info(f"🛰️ The spacecraft was at an altitude of {altitude[-1]}m at the end of the simulation")
-col3.info(f"🛰️ The spacecraft was at a velocity of {velocity[-1]}m/s at the end of the simulation")
+col3.info(f"🛰️ The spacecraft was at a ground speed of {np.around(np.linalg.norm(ground_velocities[-1]),2)}m/s and at an altitude of {altitude[-1]:.2f}m at the end of the simulation")
 
 
 
@@ -440,20 +453,7 @@ One particularly useful measure is the ground velocity vs the orbital velocity.
 '''
 with st.spinner("Generating Velocity vs time graph..."):
     fig5 = go.Figure()
-    g_velx, g_vely, g_velz = sol.y[3:6]
-    gmst_t = gmst0 + sol.t * EARTH_ROT_SPEED_DEG_S
-
-    orbital_velocities = np.linalg.norm(sol.y[3:6], axis=0)
     
-    v_ecef = np.array([CoordinateConverter.eci_to_ecef(g_velx[i], g_vely[i], g_velz[i], gmst_t[i]) for i in range(sol.t.size)])
-    w_ECEF = np.array([0, 0, EARTH_ROT_SPEED_DEG_S]) * np.pi / 180
-
-    earth_rotational_velocities = np.array([[-EARTH_ROT_SPEED_M_S * np.cos(np.deg2rad(lat)) * np.sin(np.deg2rad(lon)),
-                                            EARTH_ROT_SPEED_M_S * np.cos(np.deg2rad(lat)) * np.cos(np.deg2rad(lon)),
-                                            0] for lon in gmst_t])
-
-    ground_velocities = v_ecef - earth_rotational_velocities
-    ground_velocity_magnitudes = np.linalg.norm(ground_velocities, axis=1)
 
     max_velocity = max(max(ground_velocity_magnitudes), max(orbital_velocities), max(sol.y[3, :]), max(sol.y[4, :]), max(sol.y[5, :]))
     min_velocity = min(min(ground_velocity_magnitudes), min(orbital_velocities), min(sol.y[3, :]), min(sol.y[4, :]), min(sol.y[5, :]))
