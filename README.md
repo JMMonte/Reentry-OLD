@@ -1,14 +1,14 @@
 # Spacecraft Reentry Simulation
 
-![Screenshot](/assets/newplot.png)
-![Screenshot](/assets/Screenshot%202023-04-26%20at%2002.05.48.png)
+![Screenshot](/assets/Frame%20169.png)
+![Screenshot](/assets/Screenshot%202023-04-26%20at%2014.34.10.png)
 
 | | |
 |:-------------------------:|:-------------------------:|
-![Screenshot](/assets/Screenshot%202023-04-26%20at%2000.45.34.png) | ![Screenshot](+/../assets/newplot%20(1).png)
-![Screenshot](/assets/newplot%20(2).png)  |  ![Screenshot](/assets/newplot%20(3).png)
+![Screenshot](/assets/Screenshot%202023-04-26%20at%2016.39.40.png) | ![Screenshot](+/../assets/newplot%20(1).png)
+![Screenshot](/assets/newplot%20(2).png)  |  ![Screenshot](/assets/Screenshot%202023-04-26%20at%2019.28.15.png)
 
-This is a Python-based web application that simulates the complex dynamics of a spacecraft orbiting around the Earth. It takes into account the Earth's rotation, J2 perturbations, atmospheric drag, and the Moon's gravity while predicting the spacecraft's trajectory. 
+This is a Python-based web application that simulates the complex dynamics of a spacecraft orbiting around the Earth. It takes into account the Earth's rotation, J2 perturbations, atmospheric drag, and the Moon's gravity while predicting the spacecraft's trajectory.
 
 The simulation uses the amazing [poliastro](https://docs.poliastro.space/en/stable/) library, as well as [astropy](https://www.astropy.org/) and [streamlit](https://streamlit.io/).
 

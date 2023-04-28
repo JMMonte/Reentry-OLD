@@ -18,7 +18,7 @@ class SpacecraftVisualization:
         lons, lats = geometry.xy
         x, y, z = CoordinateConverter.geo_to_ecef(np.deg2rad(lons), np.deg2rad(lats))
         x, y, z = CoordinateConverter.ecef_to_eci(x, y, z, gmst)
-        trace = go.Scatter3d(x=x, y=y, z=z, mode='lines', line=dict(color='blue', width=2))
+        trace = go.Scatter3d(x=x, y=y, z=z, mode='lines', line=dict(color='blue', width=2),hoverinfo='none')
         return trace
 
     @staticmethod
@@ -54,7 +54,7 @@ class SpacecraftVisualization:
             lons = np.full_like(lon, lat)
             x, y, z = CoordinateConverter.geo_to_ecef(np.deg2rad(lon), np.deg2rad(lons))
             x, y, z = CoordinateConverter.ecef_to_eci(x, y, z, gmst)
-            lat_lines.append(go.Scatter3d(x=x, y=y, z=z, mode='lines', line=dict(color='blue', width=1)))
+            lat_lines.append(go.Scatter3d(x=x, y=y, z=z, mode='lines', hoverinfo='none', line=dict(color='blue', width=1)))
         return lat_lines
 
     @staticmethod
@@ -72,7 +72,7 @@ class SpacecraftVisualization:
             lons = np.full_like(lat, lon)
             x, y, z = CoordinateConverter.geo_to_ecef(np.deg2rad(lons), np.deg2rad(lat))
             x, y, z = CoordinateConverter.ecef_to_eci(x, y, z, gmst)
-            lon_lines.append(go.Scatter3d(x=x, y=y, z=z, mode='lines', line=dict(color='blue', width=1)))
+            lon_lines.append(go.Scatter3d(x=x, y=y, z=z, mode='lines', hoverinfo='none', line=dict(color='blue', width=1)))
         return lon_lines
 
     @staticmethod
@@ -95,22 +95,10 @@ class SpacecraftVisualization:
 
         return go.Mesh3d(
             x=x.flatten(), y=y.flatten(), z=z.flatten(),
-            alphahull=0, color='rgb(0,0,100)', opacity=0.9)
+            alphahull=0, color='rgb(0,0,100)', opacity=0.9, hoverinfo='none')
 
     @staticmethod
     def create_3d_arrow(x_start, y_start, z_start, x_end, y_end, z_end, color, name):
-        '''
-        Creates a plotly trace for a 3D arrow
-        :param x_start: x coordinate of the arrow start
-        :param y_start: y coordinate of the arrow start
-        :param z_start: z coordinate of the arrow start
-        :param x_end: x coordinate of the arrow end
-        :param y_end: y coordinate of the arrow end
-        :param z_end: z coordinate of the arrow end
-        :param color: color of the arrow
-        :param name: name of the arrow
-        :return: plotly trace
-        '''
         # Arrow line trace
         line_trace = go.Scatter3d(
             x=[x_start, x_end],
@@ -123,38 +111,20 @@ class SpacecraftVisualization:
         )
 
         # Arrowhead trace
-        arrowhead_length_ratio = 0.1  # Adjust this value to change the arrowhead length
-        arrowhead_width_ratio = 0.05  # Adjust this value to change the arrowhead width
-
-        arrow_vector = np.array([x_end - x_start, y_end - y_start, z_end - z_start])
-        arrow_length = np.linalg.norm(arrow_vector)
-        arrow_unit_vector = arrow_vector / arrow_length
-
-        arrowhead_length = arrow_length * arrowhead_length_ratio
-        arrowhead_base = np.array([x_end, y_end, z_end]) - arrowhead_length * arrow_unit_vector
-
-        cross_product1 = np.cross(arrow_unit_vector, np.array([1, 0, 0]))
-        if np.linalg.norm(cross_product1) == 0:
-            cross_product1 = np.cross(arrow_unit_vector, np.array([0, 1, 0]))
-
-        cross_product2 = np.cross(arrow_unit_vector, cross_product1)
-
-        arrowhead_width = arrow_length * arrowhead_width_ratio
-        corner1 = arrowhead_base + arrowhead_width * (cross_product1 / np.linalg.norm(cross_product1))
-        corner2 = arrowhead_base + arrowhead_width * (cross_product2 / np.linalg.norm(cross_product2))
-        corner3 = arrowhead_base - arrowhead_width * (cross_product1 / np.linalg.norm(cross_product1))
-        corner4 = arrowhead_base - arrowhead_width * (cross_product2 / np.linalg.norm(cross_product2))
-
-        arrowhead_trace = go.Mesh3d(
-            x=[x_end, corner1[0], corner2[0], corner3[0], corner4[0]],
-            y=[y_end, corner1[1], corner2[1], corner3[1], corner4[1]],
-            z=[z_end, corner1[2], corner2[2], corner3[2], corner4[2]],
-            i=[0, 0, 0, 0],
-            j=[1, 2, 3, 4],
-            k=[2, 3, 4, 1],
-            color=color,
-            name=name,
-            hoverinfo="none"
+        arrowhead_trace = go.Cone(
+            x=[x_end],
+            y=[y_end],
+            z=[z_end],
+            u=[x_end - x_start],
+            v=[y_end - y_start],
+            w=[z_end - z_start],
+            sizemode='absolute',
+            sizeref=500000,
+            anchor='tip',
+            colorscale=[[0, color], [1, color]],
+            showscale=False,
+            hoverinfo="none",
+            name=name
         )
 
         return line_trace, arrowhead_trace
@@ -179,39 +149,35 @@ class SpacecraftVisualization:
 
         return scatter
 
-
-    
     @staticmethod
-    def hsl_to_rgb(h, s, l):
-        return tuple(round(i * 255) for i in colorsys.hls_to_rgb(h / 360, l, s))
-    
-    @staticmethod
-    def create_3d_scatter(x, y, z, altitudes, karman_line=100000,name=None):
-
-        colors = [SpacecraftVisualization.altitude_to_color(alt) for alt in altitudes]
-        rgb_colors = [SpacecraftVisualization.hsl_to_rgb(hue, 1, 0.5) for hue in colors]
-
-        line_trace = go.Scatter3d(
-            x=x,
-            y=y,
-            z=z,
+    def create_3d_scatter(x, y, z, colors, name, colorscale='Viridis'):
+        '''
+        Creates a plotly trace for a 3D scatter plot
+        :param x: x data
+        :param y: y data
+        :param z: z data
+        :param colors: color data
+        :param name: name of the trace
+        :return: plotly trace
+        '''
+        scatter = go.Scatter3d(
+            x=x, y=y, z=z,
             mode='lines',
-            line=dict(color=rgb_colors, width=2),
-            showlegend=True,
+            line=dict(color=colors, width=4,colorscale=colorscale),
             name=name,
-            hoverinfo="none"
         )
-        return line_trace
-    
-    @staticmethod
-    def altitude_to_color(altitude, karman_line=100000):
-        # Color scale from red (0) to yellow (0.5) to green (1)
-        normalized_altitude = altitude / karman_line
-        hue = 2 * normalized_altitude  # 0 for red, 60 for yellow, 120 for green
-        return hue
+        return scatter
     
     @staticmethod
     def find_crossing_points(t_sol, downrange, altitude, threshold=100000):
+        '''
+        Finds the crossing points of a given threshold altitude
+        :param t_sol: time array
+        :param downrange: downrange array
+        :param altitude: altitude array
+        :param threshold: threshold altitude
+        :return: crossing points downrange and time
+        '''
         crossing_points_downrange = []
         crossing_points_time = []
         for i in range(1, len(altitude)):
@@ -219,3 +185,4 @@ class SpacecraftVisualization:
                 crossing_points_downrange.append(downrange[i])
                 crossing_points_time.append(t_sol[i])
         return crossing_points_downrange, crossing_points_time
+    
