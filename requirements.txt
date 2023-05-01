@@ -8,3 +8,4 @@ poliastro
 scipy
 streamlit
 geos
+numba
