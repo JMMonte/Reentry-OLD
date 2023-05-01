@@ -1,29 +1,40 @@
 from astropy import units as u
 from astropy.time import Time
-from coordinate_converter import CoordinateConverter
+from coordinate_converter import (enu_to_ecef, ecef_to_eci, geodetic_to_spheroid, eci_to_ecef, ecef_to_geodetic, ecef_to_enu_rotation_matrix, eci_velocity_to_ground_velocity)
 import numpy as np
 from poliastro.core.perturbations import J2_perturbation
-from poliastro.ephem import Ephem
 from scipy.integrate import solve_ivp
+from scipy.optimize import root_scalar
+
+
 import time
-import numba
 from numba import jit, njit
-import math
 # Constants
 # ---------
 # Operations
-DEG_TO_RAD = np.pi / 180.0 # degrees to radians
-UA_TO_M = 149597870700 # 1 astronomical unit in meters
+PI = np.pi
+DEG_TO_RAD = float(PI / 180.0) # degrees to radians
+RAD_TO_DEG = float(180.0 / PI) # radians to degrees
+JD_AT_0 = 2451545.0 # Julian date at 0 Jan 2000
 
-#Earth
+#Earth physical constants
 EARTH_MU = 3.986004418e14  # gravitational parameter of Earth in m^3/s^2
 EARTH_MU_KM = 3.986004418e5  # gravitational parameter of Earth in km^3/s^2
 EARTH_R = 6378137.0  # radius of Earth in m
 EARTH_R_KM = 6378.137  # radius of Earth in m
 EARTH_R_POLAR = 6356752.3142  # polar radius of Earth in m
 EARTH_OMEGA = 7.292114146686322e-05  # Earth rotation speed in rad/s
-EARTH_J2 = 0.00108263 # J2 of Earth
+EARTH_J2 = 0.00108263 # J2 of Earth (dimensionless)
 EARTH_MASS = 5.972e24  # Mass (kg)
+YEAR_D = 365.25636 # days in a year
+YEAR_S = 365.25636 * 24 * 60 * 60  # seconds in a year
+EARTH_ROT_S = 86164.0905  # Earth rotation period in seconds
+EARTH_GRAVITY = 9.80665  # Gravity (m/s^2)
+# Derived physical constants
+EARTH_ROTATION_RATE_DEG_PER_SEC = 360 / EARTH_ROT_S  # Earth rotation rate in degrees per second
+EARTH_RORATION_RATE_RAD_PER_SEC = EARTH_ROTATION_RATE_DEG_PER_SEC * DEG_TO_RAD  # Earth rotation rate in radians per second
+EARTH_PERIMETER = EARTH_R * 2 * PI  # Earth perimeter in meters
+EARTH_ROTATION_RATE_M_S = EARTH_PERIMETER / EARTH_ROT_S  # Earth rotation rate in meters per second
 
 # Moon
 MOON_A = 384400000.0  # Semi-major axis (meters)
@@ -33,6 +44,10 @@ MOON_OMEGA = 125.045 * DEG_TO_RAD  # Longitude of ascending node (radians)
 MOON_W = 318.0634 * DEG_TO_RAD  # Argument of perigee (radians)
 MOON_M0 = 115.3654 * DEG_TO_RAD  # Mean anomaly at epoch J2000 (radians)
 MOON_MASS = 7.34767309e22  # Mass (kg)
+MOON_ROT_D = 27.321661  # Rotation period in days
+MOON_ROT_S = MOON_ROT_D * 24 * 3600  # Rotation period in seconds
+MOON_MMOTION_DEG =  360 / MOON_ROT_D # Mean motion (degrees/day)
+MOON_MMOTION_RAD = MOON_MMOTION_DEG * DEG_TO_RAD  # Mean motion (radians/day)
 
 #Sun
 SUN_MU = 132712442099.00002 # gravitational parameter of Sun in km^3/s^2
@@ -44,47 +59,83 @@ SUN_W = 102.94719 * DEG_TO_RAD  # Argument of perigee (radians)
 SUN_L0 = 100.46435 * DEG_TO_RAD  # Mean longitude at epoch J2000 (radians)
 SUN_MASS = 1.988544e30  # Mass (kg)
 
+# Atmosphere
+# U.S. Standard Atmosphere altitude breakpoints and temperature gradients (m, K/m)
+ALTITUDE_BREAKPOINTS = np.array([0, 11000, 20000, 32000, 47000, 51000, 71000, 84852])
+TEMPERATURE_GRADIENTS = np.array([-0.0065, 0, 0.001, 0.0028, 0, -0.0028, -0.002])
+# U.S. Standard Atmosphere base temperatures and pressures at altitude breakpoints (K, Pa)
+BASE_TEMPERATURES = np.array([288.15, 216.65, 216.65, 228.65, 270.65, 270.65, 214.65, 186.95])
+BASE_PRESSURES = np.array([101325, 22632.1, 5474.9, 868.02, 110.91, 66.939, 3.9564, 0.3734])
+EARTH_AIR_MOLAR_MASS = 0.0289644 # molar mass of Earth's air (kg/mol)
+EARTH_GAS_CONSTANT = 8.31447 # Gas Constant Values based on Energy Units ; J · 8.31447, 3771.38
+R_GAS = 287.0  # J/kgK for air; This value is appropriate for air if Joule is chosen for the unit of energy, kg as unit of mass and K as unit of temperature, i.e. $ R = 287 \;$   J$ /($kg$ \;$K$ )$
+SCALE_HEIGHT = 7500.0  # Scale height (m)
 
 # numba functions
 # ----------------
+@njit
+def euclidean_norm(vec):
+    return np.sqrt(vec[0] ** 2 + vec[1] ** 2 + vec[2] ** 2)
+
 @jit(nopython=True)
 def earth_rotational_velocity(omega, r):
     omega_cross_r = np.cross(np.array([0, 0, omega]), r)
     return omega_cross_r
 
+@jit(nopython=True)
+def atmosphere_model(altitude):
+    if altitude > 1e6:
+        return 0, 0
+    elif altitude <= 0:
+        return 1.225, 288.15
+    else:
+        i = np.searchsorted(ALTITUDE_BREAKPOINTS, altitude, side='right') - 1
+        delta_altitude = altitude - ALTITUDE_BREAKPOINTS[i]
+        T = BASE_TEMPERATURES[i] + TEMPERATURE_GRADIENTS[i] * delta_altitude
+
+        if TEMPERATURE_GRADIENTS[i] == 0:
+            P = BASE_PRESSURES[i] * np.exp(-EARTH_GRAVITY * EARTH_AIR_MOLAR_MASS * delta_altitude / (EARTH_GAS_CONSTANT * BASE_TEMPERATURES[i]))
+        else:
+            P = BASE_PRESSURES[i] * (T / BASE_TEMPERATURES[i]) ** (-EARTH_GRAVITY * EARTH_AIR_MOLAR_MASS / (EARTH_GAS_CONSTANT * TEMPERATURE_GRADIENTS[i]))
+
+        if i == len(ALTITUDE_BREAKPOINTS) - 1:
+            P *= np.exp(-(altitude - ALTITUDE_BREAKPOINTS[-1]) / SCALE_HEIGHT)
+
+        rho = P / (R_GAS * T)
+
+        return rho, T
 
 @jit(nopython=True)
-def atmospheric_drag(Cd, A_over_m, rho0, H0, state, omega):
-    r, v = state[0:3], state[3:6]
-    r_norm = np.linalg.norm(r)
-    v_relative = v - earth_rotational_velocity(omega, r)
-    v_norm = np.linalg.norm(v_relative)
-    v_unit = v_relative / v_norm
-    altitude = r_norm - 6378137.0
-    rho = rho0 * np.exp(-altitude / H0)
-    a_drag = -0.5 * Cd * A_over_m * rho * v_norm ** 2 * v_unit
+def atmospheric_drag(Cd, A, r_ecef, v_ecef, x0=100000, k=0.0001):
+    r_norm = euclidean_norm(r_ecef)
+    v_norm = euclidean_norm(v_ecef)
+    v_unit = np.zeros(3)
+    if v_norm != 0:
+        v_unit = v_ecef / v_norm
 
-    return a_drag, rho
+    altitude = r_norm - EARTH_R
+    rho, _ = atmosphere_model(altitude)
 
-@njit
-def euclidean_norm(vec):
-    return math.sqrt(vec[0] ** 2 + vec[1] ** 2 + vec[2] ** 2)
+    # Apply logistic function to altitude
+    smooth_factor = 1 / (1 + np.exp(-k * (altitude - x0)))
+    a_drag_ecef = -0.5 * Cd * A * rho * v_norm ** 2 * v_unit * smooth_factor
 
+    return a_drag_ecef
 
 @jit(nopython=True)
-def estimate_reentry_heating(velocity_eci, rho, Cp, A):
-    V = euclidean_norm(velocity_eci) # m/s
-    q = 0.5 * rho * V**3 * Cp * A # W/m^2
-    return q
+def thermal_power(altitude, velocity_vec, A=10.5, C_D=1.5):
+    rho, _ = atmosphere_model(altitude)
+    v = euclidean_norm(velocity_vec)
+    Q_dot = 0.5 * C_D * rho * v**3 * A
+    return Q_dot
 
 @jit(nopython=True)
 def moon_position_vector(jd):
     # Time since J2000 (in days)
-    t = jd - 2451545.0
+    t = jd - JD_AT_0 # 2451545.0 is the Julian date for J2000
 
     # Compute mean anomaly
-    n = 2 * np.pi / 27.321582  # Mean motion (radians per day)
-    M = MOON_M0 + n * t
+    M = MOON_M0 + MOON_MMOTION_RAD * t
 
     # Solve Kepler's equation for eccentric anomaly (E) using Newton-Raphson method
     E = M
@@ -113,10 +164,10 @@ def moon_position_vector(jd):
 @jit(nopython=True)
 def sun_position_vector(jd):
     # Time since J2000 (in days)
-    t = jd - 2451545.0
+    t = jd - JD_AT_0
 
     # Compute mean anomaly
-    n = 2 * np.pi / 365.25636  # Mean motion (radians per day)
+    n = 2 * PI / YEAR_D  # Mean motion (radians per day)
     L = SUN_L0 + n * t
     M = L - SUN_OMEGA - SUN_W
 
@@ -163,100 +214,92 @@ def third_body_acceleration(satellite_position, third_body_position, satellite_m
 
     return a_perturbation / satellite_mass
 
+@jit(nopython=True)
+def J2_perturbation_numba(r, k, J2, R):
+    x, y, z = r[0], r[1], r[2]
+    r_vec = np.array([x, y, z])
+    r = euclidean_norm(r_vec)
+
+    factor = (3.0 / 2.0) * k * J2 * (R**2) / (r**5)
+
+    a_x = 5.0 * z ** 2 / r**2 - 1
+    a_y = 5.0 * z ** 2 / r**2 - 1
+    a_z = 5.0 * z ** 2 / r**2 - 3
+    return np.array([a_x, a_y, a_z]) * r_vec * factor
+
 # ----------------
 
 class SpacecraftModel:
-    def __init__(self, Cd=2.2, Cp=500.0, A=20.0, m=500.0, epoch=Time('2024-01-01 00:00:00')):
+    def __init__(self, Cd=2.2, Cp=500.0, A=20.0, m=500.0, epoch=Time('2024-01-01 00:00:00'), gmst0=0.0, sim_type='RK45'):
         self.Cd = Cd  # drag coefficient
         self.A = A  # cross-sectional area of spacecraft in m^2
         self.m = m  # mass of spacecraft in kg
         self.epoch = epoch # 
         self.start_time = time.time() # start time of simulation
         self.A_over_m = (self.A) / self.m # A/m
-        self.rho0 = 1.3 # Example density at sea level (kg/m³)
-        self.H0 = 8500 # Example scale height (m)
         self.Cp = Cp  # Example heat transfer coefficient (W/m²·K)
+        self.gmst0 = gmst0 # Greenwich Mean Sidereal Time at epoch (degrees)
+        self.sim_type = sim_type
 
-    def get_initial_state(self, v, lat, lon, alt, azimuth, gamma, attractor_R, attractor_R_Polar, gmst=0):
-        lat_rad, lon_rad, azimuth_rad, gamma_rad = np.radians([lat, lon, azimuth, gamma])
-        sin_lat, cos_lat = np.sin(lat_rad), np.cos(lat_rad)
-        sin_lon, cos_lon = np.sin(lon_rad), np.cos(lon_rad)
-        sin_azimuth, cos_azimuth = np.sin(azimuth_rad), np.cos(azimuth_rad)
-        sin_gamma, cos_gamma = np.sin(gamma_rad), np.cos(gamma_rad)
+    def get_initial_state(self, v, lat, lon, alt, azimuth, gamma, gmst=0.0):
+        # Convert geodetic to ECEF
+        x_ecef, y_ecef, z_ecef = geodetic_to_spheroid(lat, lon, alt)
+        r_ecef = np.array([x_ecef, y_ecef, z_ecef])
 
-        x_ecef, y_ecef, z_ecef = CoordinateConverter.geo_to_spheroid(lat, lon, alt,attractor_R, attractor_R_Polar)
+        # Convert velocity from polar to horizontal ENU coordinates
+        azimuth_rad = DEG_TO_RAD * azimuth
+        gamma_rad = DEG_TO_RAD * gamma
+        v_east = v * np.sin(azimuth_rad) * np.cos(gamma_rad)
+        v_north = v * np.cos(azimuth_rad) * np.cos(gamma_rad)
+        v_up = v * np.sin(gamma_rad)
+        v_enu = np.array([v_east, v_north, v_up])
 
-        r_eci = CoordinateConverter.ecef_to_eci(x_ecef, y_ecef, z_ecef, gmst)
+        # Convert ENU to ECEF
+        v_ecef = enu_to_ecef(v_enu, lat, lon)
 
-        sin_azimuth, cos_azimuth = np.sin(azimuth_rad), np.cos(azimuth_rad)
-        sin_gamma, cos_gamma = np.sin(gamma_rad), np.cos(gamma_rad)
+        # Convert position and velocity from ECEF to ECI
+        r_eci = ecef_to_eci(r_ecef, gmst)
+        v_eci = ecef_to_eci(v_ecef, gmst)
 
-        v_east = v * sin_azimuth * cos_gamma
-        v_north = v * cos_azimuth * cos_gamma
-        v_up = v * sin_gamma
-
-        v_x_ecef = -v_east * sin_lon - v_north * sin_lat * cos_lon + v_up * cos_lat * cos_lon
-        v_y_ecef = v_east * cos_lon - v_north * sin_lat * sin_lon + v_up * cos_lat * sin_lon
-        v_z_ecef = v_north * cos_lat + v_up * sin_lat
-
-        v_x_rot = -EARTH_OMEGA * y_ecef
-        v_y_rot = EARTH_OMEGA * x_ecef
-
-        v_x_ecef_total = v_x_ecef + v_x_rot
-        v_y_ecef_total = v_y_ecef + v_y_rot
-        v_z_ecef_total = v_z_ecef
-
-        v_eci = CoordinateConverter.ecef_to_eci(v_x_ecef_total, v_y_ecef_total, v_z_ecef_total, gmst)
-        v_eci -= earth_rotational_velocity(7.292114146686322e-05,r_eci)
-
+        # Combine position and velocity to create the initial state vector
         y0 = np.concatenate((r_eci, v_eci))
 
         return y0
 
     def equations_of_motion(self, t, y):
-        r, v = y[0:3], y[3:6]
+        r_eci, v_eci = y[0:3], y[3:6]
+        r_norm = euclidean_norm(r_eci)
 
-        # Precompute r_norm and other reused values
-        r_norm = np.linalg.norm(r)
-
-        a_grav = -EARTH_MU * r / (r_norm ** 3)
-
-        y_km_s = y * 1e-3
-
-        # Compute J2 acceleration
-        a_J2 = J2_perturbation(t, y_km_s, EARTH_MU_KM, J2=EARTH_J2, R=EARTH_R_KM)
-        a_J2 = (np.array(a_J2) * u.km / u.s ** 2).to(u.m / u.s ** 2).value
-
-        # Get sun and moon position
+        # Calculate Greenwich Mean Sidereal Time at every time step
         epoch = self.epoch + t * u.s
-        # moon
+        gmst = self.gmst0 + EARTH_OMEGA * t
+
+        # Calculate ECEF position and ground velocity
+        r_ecef = eci_to_ecef(r_eci, gmst)
+        v_ground = eci_to_ecef(v_eci, gmst)
+        v_rel = v_ground - np.array([-EARTH_OMEGA * r_ecef[1], EARTH_OMEGA * r_ecef[0], 0])
+
+        # Calculate accelerations
+        a_grav = -EARTH_MU * r_eci / (r_norm ** 3)
+        a_J2 = J2_perturbation_numba(r_eci, k=EARTH_MU, J2=EARTH_J2, R=EARTH_R)
         moon_r = moon_position_vector(epoch.jd)
-        # sun
         sun_r = sun_position_vector(epoch.jd)
+        a_moon = third_body_acceleration(r_eci, moon_r, self.m, MOON_MASS)
+        a_sun = third_body_acceleration(r_eci, sun_r, self.m, SUN_MASS)
 
-        # Compute moon acceleration
-        a_moon = third_body_acceleration(r, moon_r, self.m, MOON_MASS)
-        # Compute sun acceleration        
-        a_sun = third_body_acceleration(r, sun_r, self.m, SUN_MASS)
+        # Calculate drag acceleration
+        a_drag_ecef = atmospheric_drag(Cd=self.Cd, A=self.A, r_ecef=r_ecef, v_ecef=v_rel)
+        a_drag = ecef_to_eci(a_drag_ecef, gmst)
 
-        # Compute drag acceleration
+        # Calculate heat rate
         altitude = r_norm - EARTH_R
-        if 0 <= altitude <= 1e6:
-            a_drag = atmospheric_drag(self.Cd, self.A_over_m, self.rho0, self.H0, y, EARTH_OMEGA)[0]
-            rho = atmospheric_drag(self.Cd, self.A_over_m, self.rho0, self.H0, y, EARTH_OMEGA)[1]
+        q = thermal_power(altitude=altitude, velocity_vec=v_rel, A=self.A, C_D=self.Cp)
 
-        else:
-            a_drag = np.zeros(3)
-            rho = 0
-
-        # In-place addition of accelerations
+        # Calculate total acceleration
         a_total = a_grav + a_J2 + a_moon + a_sun + a_drag
 
-        #compute heating
-        q = estimate_reentry_heating(v, rho, self.Cp, self.A)
-
         return {
-            'velocity': v,
+            'velocity': v_eci,
             'acceleration': a_total,
             'gravitational_acceleration': a_grav,
             'J2_acceleration': a_J2,
@@ -264,8 +307,9 @@ class SpacecraftModel:
             'drag_acceleration': a_drag,
             'altitude': altitude,
             'sun_acceleration': a_sun,
-            'heat_rate': q
+            'heat_rate': q,
         }
+
     
     def run_simulation(self, t_span, y0, t_eval, progress_callback=None):
         def rhs(t, y):
@@ -274,9 +318,10 @@ class SpacecraftModel:
         
         def altitude_event(t, y):
             r = y[0:3]
-            r_norm = np.linalg.norm(r)
+            r_norm = euclidean_norm(r)
             altitude = r_norm - EARTH_R
-            return altitude
+            # Add a tolerance value to avoid triggering the event too close to the atmospheric boundary
+            return altitude - 1000.0
         
         altitude_event.terminal = True
         altitude_event.direction = -1
@@ -291,7 +336,7 @@ class SpacecraftModel:
         progress_event.terminal = False
         progress_event.direction = 0
 
-        sol = solve_ivp(rhs, t_span, y0, method='BDF', t_eval=t_eval, rtol=1e-8, atol=1e-10, events=[altitude_event, progress_event])
+        sol = solve_ivp(rhs, t_span, y0, method=self.sim_type, t_eval=t_eval, rtol=1e-8, atol=1e-10, events=[altitude_event, progress_event])
         additional_data_list = [self.equations_of_motion(t, y) for t, y in zip(sol.t, sol.y.T)]
         sol.additional_data = {key: np.array([d[key] for d in additional_data_list]) for key in additional_data_list[0].keys()}
         return sol

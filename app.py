@@ -4,7 +4,7 @@ from astropy.time import Time, TimeDelta
 import base64
 import cartopy.feature as cfeature
 from copy import deepcopy
-from coordinate_converter import CoordinateConverter
+from coordinate_converter import (eci_to_ecef, ecef_to_geodetic, ecef_to_enu, ecef_distance, haversine_distance)
 import datetime
 import plotly.graph_objects as go
 import pandas as pd
@@ -13,10 +13,11 @@ from poliastro.twobody import Orbit
 from spacecraft_model import SpacecraftModel
 from spacecraft_visualization import SpacecraftVisualization
 import streamlit as st
-import plotly.express as px
 import matplotlib.colors as mcolors
 import matplotlib.cm as cm
-from numba import jit, njit
+from numba import jit
+from spacecraft_model import atmosphere_model
+import plotly.subplots as subplots
 
 #Constants
 #Earth
@@ -36,34 +37,34 @@ EARTH_ROT_SPEED_M_S = EARTH_R * EARTH_ROT_SPEED_RAD_S # Earth rotation speed in 
 
 # Special functions
 #--------------------------------------------
-class LoadedSolution:
-    def __init__(self, t, y):
-        self.t = t
-        self.y = y
 @jit(nopython=True)
 def filter_results_by_altitude(sol, altitude):
     valid_indices = [i for i, alt in enumerate(altitude) if alt >= 0]
-
     sol = deepcopy(sol)
     sol.y = sol.y[:, valid_indices]
     sol.t = sol.t[valid_indices]
     sol.additional_data = [sol.additional_data[i] for i in valid_indices]
-
     return sol
-
-# Create a download link for the simulated data
 
 def make_download_link(df, filename, text):
     csv = df.to_csv(index=False)
     b64 = base64.b64encode(csv.encode()).decode()
     return f'<a href="data:file/csv;base64,{b64}" download="{filename}">{text}</a>'
 
+def mpl_to_plotly_colormap(cmap, num_colors=256):
+    colors = [mcolors.rgb2hex(cmap(i)[:3]) for i in range(num_colors)]
+    scale = np.linspace(0, 1, num=num_colors)
+    return [list(a) for a in zip(scale, colors)]
+
+def get_color(normalized_value, colormap):
+    rgba = colormap(normalized_value)
+    return f"rgba({int(rgba[0]*255)}, {int(rgba[1]*255)}, {int(rgba[2]*255)}, {rgba[3]})"
+
 # Begin the app
 #--------------------------------------------
 # main variables
 spacecraft = SpacecraftModel()
 visualization = SpacecraftVisualization()
-convert = CoordinateConverter()
 data_directory = "data"
 coastline_feature = cfeature.COASTLINE
 country_feature = cfeature.BORDERS
@@ -107,7 +108,7 @@ with st.sidebar:
         area = st.number_input("Cross section area (m^2)", value=20, help="The cross-sectional area (A) refers to a spacecraft's projected area perpendicular to the direction of motion during orbital and reentry trajectories. By adjusting A in the number input, you can evaluate its influence on drag forces, deceleration, heating, and trajectory accuracy.:s Smaller cross-sectional areas lead to reduced drag forces (e.g., Mercury capsule, A ~ 1.2 m²), promoting stability and requiring less deceleration. Larger cross-sectional areas increase drag (e.g., SpaceX's Starship, A ~ 354.3 m²), aiding in deceleration but potentially increasing heating rates.:sProperly managing cross-sectional area based on the spacecraft's design ensures optimized flight paths and successful mission outcomes.")
         codrag = st.number_input("Drag coefficient", value=1.3, min_value=0.0, help="The drag coefficient (Cd) quantifies a spacecraft's aerodynamic resistance during orbital and reentry trajectories. By adjusting Cd in the number input, you can explore its impact on the spacecraft's deceleration, heating, and trajectory accuracy.:s Lower Cd values indicate reduced aerodynamic drag (e.g., Mars Science Laboratory, Cd ~ 0.9), leading to smoother reentry and longer deceleration times. Higher Cd values result in increased drag (e.g., Apollo Command Module, Cd ~ 1.3), causing more rapid deceleration and potentially higher heating rates.:s Optimizing Cd based on the spacecraft's shape and design helps ensure efficient trajectory planning and mission success.")
         Cp = st.number_input("Heat transfer coefficient", value=500.0, min_value=0.0, help='''
-        The heat transfer coefficient (Cp) represents a spacecraft's ability to absorb, conduct, and radiate heat during orbital and reentry trajectories. By adjusting Cp in the number input, you can simulate how the spacecraft's thermal performance affects its mission outcome.:s Lower Cp values indicate reduced heat transfer (e.g., Apollo Command Module, Cp ~ 300 W/m²·K), leading to slower heating rates and prolonged reentry durations. Higher Cp values imply increased heat transfer (e.g., Space Shuttle, Cp ~ 800 W/m²·K), resulting in faster heating rates and shorter reentry durations.:s Carefully selecting Cp based on spacecraft materials and design ensures safe and accurate trajectory planning for successful missions.''')
+        The heat transfer coefficient (Cp) represents a spacecraft's ability to absorb, conduct, and radiate heat during orbital and reentry trajectories. By adjusting Cp in the number input, you can simulate how the spacecraft's thermal performance affects its mission outcome.:s Lower Cp values indicate reduced heat transfer (e.g., Apollo Command Module, Cp ~ 300 W), leading to slower heating rates and prolonged reentry durations. Higher Cp values imply increased heat transfer (e.g., Space Shuttle, Cp ~ 800 W), resulting in faster heating rates and shorter reentry durations.:s Carefully selecting Cp based on spacecraft materials and design ensures safe and accurate trajectory planning for successful missions.''')
     with st.expander("Edit initial state", expanded=True):
         v = st.number_input("Orbital Velocity (m/s)", value=7.5e3, step=1e2, key="velocity", help="Orbital velocity (V) is the speed required for a spacecraft to maintain a stable orbit around a celestial body. By adjusting V in the number input, you can analyze its impact on orbit design, altitude, period, and mission objectives.:s For example, geostationary satellites orbit at a higher altitude than low Earth orbit spacecraft, but they have a lower orbital velocity (e.g., V ~ 3.07 km/s). The geostationary transfer orbit, on the other hand, is a high-velocity maneuver orbit used to transfer a spacecraft from low Earth orbit to geostationary orbit. This transfer orbit has a higher velocity than geostationary orbit (e.g., V ~ 10.3 km/s at perigee).:s Selecting an appropriate orbital velocity based on mission requirements and spacecraft capabilities ensures efficient orbit design and mission success.")
         azimuth = st.number_input("Azimuth (degrees)", value=90.0, min_value=0.0, max_value=360.0, step=1.0, key="azimuth", help="Azimuth represents the spacecraft's angle relative to a reference direction during orbital and reentry trajectories. By adjusting the azimuth in the number input, you can simulate how the spacecraft's orientation affects its mission outcome.:s Properly managing the spacecraft's azimuth is crucial for achieving optimal trajectory accuracy and minimizing aerodynamic drag. For example, during reentry, a steeper azimuth angle can result in higher heating rates due to increased deceleration, while a shallower angle can lead to a longer reentry duration.:s Historic missions such as Apollo 11 and the Space Shuttle program used specific azimuth angles to achieve their mission objectives. Apollo 11 had a roll angle of 69.5 degrees during reentry, while the Space Shuttle typically used an azimuth angle of around 40 degrees for its deorbit burn.:s Selecting the appropriate azimuth angle depends on the spacecraft's objectives and design. Properly managing the azimuth angle can help ensure safe and accurate trajectory planning for successful missions.")
@@ -122,10 +123,11 @@ with st.sidebar:
     spacecraft_datetime_string = f"{calendar} {clock.hour}:{clock.minute}:{clock.second}"
     
     epoch = Time(spacecraft_datetime_string, format="iso", scale='tdb')
-    gmst0 = epoch.sidereal_time('mean', 'greenwich').to_value(u.deg) # get the greenwich mean sidereal time
-
-    y0 = spacecraft.get_initial_state(v=v, lat=lat, lon=lon, alt=alt * 1000, azimuth=azimuth,gamma=gamma, attractor_R=EARTH_R, attractor_R_Polar=EARTH_R_POLAR, gmst=gmst0)
-    spacecraft = SpacecraftModel(Cd=codrag, A=area,m=mass, epoch=epoch, Cp=Cp)
+    
+    gmst0 = epoch.sidereal_time('mean', 'greenwich').to_value(u.rad) # get the greenwich mean sidereal time
+    
+    y0 = spacecraft.get_initial_state(v=v, lat=lat, lon=lon, alt=alt * 1000, azimuth=azimuth,gamma=gamma, gmst=gmst0)
+    spacecraft = SpacecraftModel(Cd=codrag, A=area,m=mass, epoch=epoch, Cp=Cp, gmst0=gmst0)
     # Define integration parameters
     orbit = Orbit.from_vectors(Earth, y0[0:3] * u.m, y0[3:6] * u.m / u.s, epoch)
     with sidebar.expander("Initial Orbit parameters"):
@@ -152,14 +154,14 @@ with st.sidebar:
     ts = 0 # initial time in seconds
     tf = st.number_input("Simulation duration (s)", min_value=0 , value=3700, step=1, key="tf", help="How long do you want to simulate the spacecraft?")  # final time in seconds
     dt = st.number_input("Time step (s)", min_value=0 , value=10, step=1, key="dt", help="The simulation will be broken down into a time step. Shorter timesteps give more precision but will increase the processing time.")  # time step in seconds
-
+    sim_type = st.selectbox("Solver method", ["RK45", "RK23","DOP853","Radau","BDF","LSODA"], key="sim_type", help="The integration method to be used by the simulation physics solver. Explicit Runge-Kutta methods ('RK23', 'RK45', 'DOP853') should be used for non-stiff problems and implicit methods ('Radau', 'BDF') for stiff problems. Among Runge-Kutta methods, 'DOP853' is recommended for solving with high precision (low values of `rtol` and `atol`).:s If not sure, first try to run 'RK45'. If it makes unusually many iterations, diverges, or fails, your problem is likely to be stiff and you should use 'Radau' or 'BDF'. 'LSODA' can also be a good universal choice, but it might be somewhat less convenient to work with as it wraps old Fortran code.:s You can also pass an arbitrary class derived from `OdeSolver` which implements the solver.")
     # Extract vectors for charts
     x_pos, y_pos, z_pos = y0[0:3] # Extract the position components
     x_vel, y_vel, z_vel = y0[3:6] # Extract the velocity components
 
     # Scale factor for the velocity vector
     scale_factor = 500  # Adjust this value to scale the velocity vector
-    vel_arrow = visualization.create_3d_arrow(x_pos, y_pos, z_pos, x_pos + x_vel * scale_factor, y_pos + y_vel * scale_factor, z_pos + z_vel * scale_factor, 'blue', 'Velocity vector') # Velocity vector scaled
+    vel_arrow = visualization.create_3d_arrow(x_pos, y_pos, z_pos, x_pos + x_vel * scale_factor, y_pos + y_vel * scale_factor, z_pos + z_vel * scale_factor, 'green', 'Velocity vector') # Velocity vector scaled
     pos_arrow = visualization.create_3d_arrow(0, 0, 0, x_pos, y_pos, z_pos, 'red', 'Position vector') # Position vector
 
     # Update time span and t_eval based on ts
@@ -220,9 +222,30 @@ if not run_simulation:
 #--------------------------------------------
 # unpack the solution
 t_sol = sol.t # Extract the time array
-eci_coords = sol.y[0:3] # Extract the ECI coordinates
-# coordinates as ECEF
-ecef_coords = convert.eci_to_ecef(eci_coords[0], eci_coords[1], eci_coords[2], gmst0)
+r_eci = sol.y[0:3] # Extract the ECI coordinates
+v_eci = sol.y[3:6] # Extract the ECI velocity components
+
+# Calculate GMST for each time step
+gmst_vals = gmst0 + EARTH_OMEGA * t_sol
+
+# Convert ECI to ECEF and then to geodetic coordinates
+r_ecef_vals = []
+v_ecef_vals = []
+geodetic_coords = []
+
+for r, v, gmst in zip(r_eci.T, v_eci.T, gmst_vals):
+    r_ecef = eci_to_ecef(r, gmst)
+    v_ecef = eci_to_ecef(v, gmst)
+    lat, lon, alt = ecef_to_geodetic(r_ecef[0], r_ecef[1], r_ecef[2])
+
+    r_ecef_vals.append(r_ecef)
+    v_ecef_vals.append(v_ecef)
+    geodetic_coords.append([lat, lon, alt])
+
+r_ecef_vals = np.array(r_ecef_vals)
+v_ecef_vals = np.array(v_ecef_vals)
+geodetic_coords = np.array(geodetic_coords)
+
 additional_data = sol.additional_data # Compute additional parameters
 
 # Unpack additional data
@@ -246,11 +269,17 @@ drag_acceleration_norm = np.linalg.norm(drag_acceleration, axis=0)
 sun_acceleration_norm = np.linalg.norm(sun_acceleration, axis=0)
 
 # convert to g's
-gs_acceleration = total_acceleration_norm / 9.81
+gs_acceleration = total_acceleration_norm / 9.80665 # convert to g's
 
 # compute downrange distance
-downrange = convert.ecef_distance(ecef_coords[0][0], ecef_coords[1][0], ecef_coords[2][0], ecef_coords[0], ecef_coords[1], ecef_coords[2])
-crossing_points_downrange, crossing_points = visualization.find_crossing_points(t_sol, downrange, altitude, threshold=100000)
+downrange_distances = [0]
+
+for i in range(1, len(geodetic_coords)):
+    lat1, lon1, _ = geodetic_coords[i - 1]
+    lat2, lon2, _ = geodetic_coords[i]
+    distance = haversine_distance(lat1, lon1, lat2, lon2)
+    downrange_distances.append(downrange_distances[-1] + distance)
+crossing_points_downrange, crossing_points = visualization.find_crossing_points(t_sol, downrange_distances, altitude, threshold=100000)
 
 closest_indices = np.abs(np.subtract.outer(t_sol, crossing_points)).argmin(axis=0)
 crossing_points_r_v = sol.y[:, closest_indices]
@@ -263,15 +292,15 @@ altitude_event_times = sol.t_events[0]
 touchdown_time = np.int16(t_sol[-1])
 
 # get last position
-touchdown_r = eci_coords[-1]
+touchdown_r = r_eci[-1]
 
 # Upload/download simulation data
 #--------------------------------------------
 data = {
     't': t_sol,
-    'x': eci_coords[0],
-    'y': eci_coords[1],
-    'z': eci_coords[2],
+    'x': r_eci[0],
+    'y': r_eci[1],
+    'z': r_eci[2],
     'vx': sol.y[3],
     'vy': sol.y[4],
     'vz': sol.y[5],
@@ -312,15 +341,15 @@ with st.spinner("Generating trajectory 3d plot..."):
 
     fig3.add_traces(pos_arrow + vel_arrow)
 
-    trajectory_trace = SpacecraftVisualization.create_3d_scatter(eci_coords[0], eci_coords[1], eci_coords[2], heat_rate, name='Simulated trajectory', colorscale='Agsunset')
+    trajectory_trace = SpacecraftVisualization.create_3d_scatter(r_eci[0], r_eci[1], r_eci[2], heat_rate, name='Simulated trajectory', colorscale='Agsunset')
     fig3.add_trace(trajectory_trace)
 
     marker_color = 'purple' if altitude_event_times.size > 0 else 'red'
     marker_name = 'Touchdown' if altitude_event_times.size > 0 else 'Final position'
-    fig3.add_trace(go.Scatter3d(x=[eci_coords[0, -1]], y=[eci_coords[1, -1]], z=[eci_coords[2, -1]], mode='markers', marker=dict(size=6, color=marker_color), name=marker_name))
+    fig3.add_trace(go.Scatter3d(x=[r_eci[0, -1]], y=[r_eci[1, -1]], z=[r_eci[2, -1]], mode='markers', marker=dict(size=6, color=marker_color), name=marker_name))
 
     if altitude_event_times.size > 0:
-        fig3.update_layout(scene=dict(annotations=[dict(x=eci_coords[0, -1], y=eci_coords[1, -1], z=eci_coords[2, -1], text="Touchdown", showarrow=True)]))
+        fig3.update_layout(scene=dict(annotations=[dict(x=r_eci[0, -1], y=r_eci[1, -1], z=r_eci[2, -1], text="Touchdown", showarrow=True)]))
 
     impact_time = t_sol[-1]
 
@@ -330,7 +359,7 @@ with st.spinner("Generating trajectory 3d plot..."):
         crossing_points_r_z = np.float64(crossing_points_r[2])
         fig3.add_trace(go.Scatter3d(x=[crossing_points_r_x], y=[crossing_points_r_y], z=[crossing_points_r_z], mode='markers', marker=dict(size=6, color='orange'), name='Karman line crossing'))
 
-    gmst = gmst0 + EARTH_ROT_SPEED_DEG_S * impact_time
+    gmst = gmst0 + EARTH_OMEGA * impact_time
     spheroid_mesh = visualization.create_spheroid_mesh()
     fig3.add_trace(spheroid_mesh)
 
@@ -347,6 +376,64 @@ with st.spinner("Generating trajectory 3d plot..."):
     fig3.update_layout(scene_camera=dict(eye=dict(x=-0.5, y=0.6, z=1)))
     fig3.update_layout(scene_aspectmode='data')
     st.plotly_chart(fig3, use_container_width=True, equal_axes=True)
+    
+    # Show heat rate by time
+    # Normalize heat_rate data
+    vmin, vmax = np.min(heat_rate), np.max(heat_rate)
+    normalized_heat_rate = (heat_rate - vmin) / (vmax - vmin)
+
+    # Calculate tick values and tick text for the subdivisions
+    num_subdivisions = 10
+    heat_rate_tickvals = np.linspace(0, 1, num_subdivisions)
+    heat_rate_ticktext = [f"{vmin + tick * (vmax - vmin):.3E}" for tick in heat_rate_tickvals]
+
+    colormap = cm.get_cmap('plasma')
+    custom_colorscale = mpl_to_plotly_colormap(colormap)
+    fig_colorscale = go.Figure()
+    fig_colorscale.add_trace(go.Heatmap(
+        x=sol.t,  # Add this line to set x values to sol.t
+        z=[normalized_heat_rate],
+        text=[[f"{value:.3E} W" for value in heat_rate]],  # Update text values to include units
+        hoverinfo='x+y+text',
+        colorscale=custom_colorscale,
+        showscale=True,
+        colorbar=dict(
+            title="Heat rate [W]",
+            titleside="bottom",
+            x=0.5,
+            lenmode="fraction",
+            len=1,
+            yanchor="top",
+            y=-1.1,
+            thicknessmode="pixels",
+            thickness=20,
+            orientation="h",
+            tickvals=heat_rate_tickvals,
+            ticktext=heat_rate_ticktext,
+        ),
+    ))
+
+    fig_colorscale.update_layout(
+        autosize=True,
+        width=800,
+        height=200,
+        margin=dict(l=0, r=0, t=0, b=100),
+        yaxis=dict(
+            showticklabels=False,
+            showgrid=False,
+            zeroline=False,
+        ),
+        xaxis=dict(
+            showticklabels=True,
+            showgrid=True,
+            zeroline=False,
+            title="Time [s]",
+        ),
+        showlegend=True,
+    )
+
+    st.plotly_chart(fig_colorscale, use_container_width=True)
+
 
 
 
@@ -355,33 +442,20 @@ with st.spinner("Generating trajectory 3d plot..."):
 st.subheader("Crash Detection")
 col2, col3 = st.columns(2)
 duration = datetime.timedelta(seconds=impact_time.astype(float))
-g_velx, g_vely, g_velz = sol.y[3:6]
-gmst_t = gmst0 + sol.t * EARTH_ROT_SPEED_DEG_S
 
-orbital_velocities = np.linalg.norm(sol.y[3:6], axis=0)
 
-v_ecef = np.array([CoordinateConverter.eci_to_ecef(g_velx[i], g_vely[i], g_velz[i], gmst_t[i]) for i in range(sol.t.size)])
-w_ECEF = np.array([0, 0, EARTH_ROT_SPEED_DEG_S]) * np.pi / 180
-
-earth_rotational_velocities = np.array([[-EARTH_ROT_SPEED_M_S * np.cos(np.deg2rad(lat)) * np.sin(np.deg2rad(lon)),
-                                        EARTH_ROT_SPEED_M_S * np.cos(np.deg2rad(lat)) * np.cos(np.deg2rad(lon)),
-                                        0] for lon in gmst_t])
-
-ground_velocities = v_ecef - earth_rotational_velocities
-ground_velocity_magnitudes = np.linalg.norm(ground_velocities, axis=1)
 if altitude_event_times > 0:
     # get location of impact in ECEF
-    impact_point_ecef = np.array([eci_coords[0, -1], eci_coords[1, -1], eci_coords[2, -1]])
+    last_r_ecef = np.array([r_eci[0, -1], r_eci[1, -1], r_eci[2, -1]])
     # get location of impact in lat, lon, alt
-    impact_point_lat_lon_alt = convert.ecef_to_geo(impact_point_ecef[0], impact_point_ecef[1], impact_point_ecef[2])
-    # break down the lat, lon, alt
-    impact_point_lat = impact_point_lat_lon_alt[0]
-    impact_point_lon = impact_point_lat_lon_alt[1]
-    impact_point_alt = impact_point_lat_lon_alt[2]
-    col2.warning(f"⚠️ Touchdown detected {duration} (hh,mm,ss) after start intial time, experiencing a maximum deceleration of {max(gs_acceleration):.2f} G")
-    col2.info(f"📍 Touchdown detected at {impact_point_lat}ºN, {impact_point_lon}ºE")
-elif len(crossing_points) > 0:
-    col2.warning(f"⚠️ You're a fireball! Crossing the Karman line at {crossing_points} seconds after start intial time")
+    last_r_geo = ecef_to_geodetic(last_r_ecef[0], last_r_ecef[1], last_r_ecef[2])
+    # break down the lat, lon
+    last_r_lat = last_r_geo[0]
+    last_r_lon = last_r_geo[1]
+    col2.info(f"📍 Touchdown detected at {last_r_lat}ºN, {last_r_lon}ºE")
+    col2.error(f"⚠️ Touchdown detected {duration} (hh,mm,ss) after start intial time.")
+if len(crossing_points) > 0:
+    col2.warning(f"⚠️ You're a fireball! Crossing the Karman line at {crossing_points} seconds after start intial time, experiencing a maximum deceleration of {max(gs_acceleration):.2f} G")
 
 else:
     col2.success("Still flying high")
@@ -389,9 +463,9 @@ else:
 
 
 final_time = epoch + TimeDelta(impact_time, format='sec')
-col2.warning(f"🌡️ The spacecraft reached a heat rate of {max(heat_rate):.2f} W/m^2 during simulation. You can see what parts of the orbit were the hottest in the 3d plot above👆.")
+col2.warning(f"🌡️ The spacecraft reached a heat rate of {max(heat_rate):.3E} W during simulation. You can see what parts of the orbit were the hottest in the 3d plot above👆.")
 col3.info(f"⏰ The simulation start time was {epoch} and ended on: {final_time}, with a total time simulated of: {duration} (hh,mm,ss)")
-col3.info(f"🛰️ The spacecraft was at a ground speed of {np.around(np.linalg.norm(ground_velocities[-1]),2)}m/s and at an altitude of {altitude[-1]:.2f}m at the end of the simulation")
+col3.info(f"🛰️ The spacecraft was at a ground speed of {np.around(np.linalg.norm(v_ecef[-1]),2)}m/s and at an altitude of {altitude[-1]:.2f}m at the end of the simulation")
 
 
 
@@ -443,41 +517,6 @@ with st.spinner("Generating altitude vs time graph..."):
 
 
 
-
-# Plot the velocity vs time
-#--------------------------------------------
-st.subheader("Velocity vs Time")
-''' 
-Here you can see the velocity of the spacecraft both in absolute magnitude as well as in the x, y, and z directions.
-One particularly useful measure is the ground velocity vs the orbital velocity.
-'''
-with st.spinner("Generating Velocity vs time graph..."):
-    fig5 = go.Figure()
-    
-
-    max_velocity = max(max(ground_velocity_magnitudes), max(orbital_velocities), max(sol.y[3, :]), max(sol.y[4, :]), max(sol.y[5, :]))
-    min_velocity = min(min(ground_velocity_magnitudes), min(orbital_velocities), min(sol.y[3, :]), min(sol.y[4, :]), min(sol.y[5, :]))
-
-    fig5.add_trace(go.Scatter(x=t_sol, y=ground_velocity_magnitudes, mode='lines', line=dict(color='Purple', width=2), name='Ground Velocity'))
-    fig5.add_trace(go.Scatter(x=t_sol, y=orbital_velocities, mode='lines', line=dict(color='white', width=2), opacity=0.5, name='Orbital Velocity'))
-    fig5.add_trace(go.Scatter(x=t_sol, y=sol.y[3, :], mode='lines', line=dict(color='blue', width=2), name='X Velocity'))
-    fig5.add_trace(go.Scatter(x=t_sol, y=sol.y[4, :], mode='lines', line=dict(color='red', width=2), name='Y Velocity'))
-    fig5.add_trace(go.Scatter(x=t_sol, y=sol.y[5, :], mode='lines', line=dict(color='green', width=2), name='Z Velocity'))
-
-    if crossing_points is not None:
-        for idx, crossing_point in enumerate(crossing_points):
-            fig5.add_shape(type='line', x0=crossing_point, x1=crossing_point, y0=min_velocity, y1=max_velocity, yref='y', xref='x', line=dict(color='rgba(255, 0, 0, 0.5)', width=2, dash='dot'))
-            fig5.add_annotation(x=crossing_point, y=max_velocity, text=f'Crossing Karman line {idx+1}', showarrow=True, font=dict(size=10), xanchor='center', yshift=10)
-
-    if altitude_event_times.size > 0:
-        fig5.add_shape(type='line', x0=[touchdown_time], x1=[touchdown_time], y0=min_velocity, y1=max_velocity, yref='y', xref='x', line=dict(color='rgba(0, 255, 0, 0.5)', width=2, dash='dot'))
-        fig5.add_annotation(x=[touchdown_time], y=max_velocity, text='Touchdown', showarrow=True, font=dict(size=10), xanchor='center', yshift=10)
-
-    fig5.update_layout(xaxis_title='Time (s)', yaxis_title='Velocity (m/s)',legend=dict(y=1.2, yanchor="top", xanchor="left", x=0, orientation="h"),hovermode="x unified")
-    st.plotly_chart(fig5, use_container_width=True)
-
-
-
 # Plot the downrange vs altitude
 #--------------------------------------------
 st.subheader("Downrange vs Altitude")
@@ -488,12 +527,13 @@ Downrange is being measured in absolute distance from the starting point.
 # Calculate downrange using ecef_distance function
 # Begin plotting
 with st.spinner("Generating Downrange vs Altitude graph..."):
+    # downrange to km
     fig6 = go.Figure()
-    fig6.add_trace(go.Scatter(x=downrange, y=altitude, mode='lines', line=dict(color='purple', width=2), name='Altitude'))
-    fig6.add_trace(go.Scatter(x=[0, max(downrange)], y=[100000]*2, mode='lines', line=dict(color='rgba(255,255,255,0.5)', width=2, dash= 'dot'), name='Karman Line'))
+    fig6.add_trace(go.Scatter(x=downrange_distances, y=altitude, mode='lines', line=dict(color='purple', width=2), name='Altitude'))
+    fig6.add_trace(go.Scatter(x=[0, max(downrange_distances)], y=[100000]*2, mode='lines', line=dict(color='rgba(255,255,255,0.5)', width=2, dash= 'dot'), name='Karman Line'))
 
     for layer in atmosphere_layers:
-        fig6.add_shape(type='rect', x0=0, x1=max(downrange), y0=layer[0], y1=layer[1], yref='y', xref='x', line=dict(color='rgba(255, 0, 0, 0)', width=0), fillcolor=layer[2], opacity=0.3, name=layer[3])
+        fig6.add_shape(type='rect', x0=0, x1=max(downrange_distances), y0=layer[0], y1=layer[1], yref='y', xref='x', line=dict(color='rgba(255, 0, 0, 0)', width=0), fillcolor=layer[2], opacity=0.3, name=layer[3])
         fig6.add_annotation(x=0, y=layer[1], text=layer[3], xanchor='left', yanchor='bottom', font=dict(size=10), showarrow=False)
 
     if crossing_points_downrange is not None:
@@ -519,26 +559,18 @@ Groundtrack's are a way to visualize the path of a spacecraft on a map in refere
 To do this we need to adjust our original frame of reference (Earth-Centered Inertial) to a new frame of reference (Earth-Centered Earth-Fixed).
 '''
 #'equirectangular', 'mercator', 'orthographic', 'natural earth', 'kavrayskiy7', 'miller', 'robinson', 'eckert4', 'azimuthal equal area', 'azimuthal equidistant', 'conic equal area', 'conic conformal', 'conic equidistant', 'gnomonic', 'stereographic', 'mollweide', 'hammer', 'transverse mercator', 'albers usa', 'winkel tripel', 'aitoff', 'sinusoidal']
-col1, col2 = st.columns(2)
 
 fig7 = go.Figure()
-gmst_values = [(gmst0 + EARTH_ROT_SPEED_DEG_S * t) * np.pi / 180 for t in sol.t]
-ecef_coords = [convert.eci_to_ecef(sol.y[0, i], sol.y[1, i], sol.y[2, i], gmst) for i, gmst in enumerate(gmst_values)]
-lat_lon_alt = [convert.ecef_to_geo(coord[0], coord[1], coord[2]) for coord in ecef_coords]
-latitudes, longitudes = zip(*[(coord[0] * 180/np.pi, coord[1] * 180/np.pi) for coord in lat_lon_alt])
+# Convert ECEF to geodetic coordinates
+latitudes, longitudes = geodetic_coords[:, 0], geodetic_coords[:, 1]
+altitudes = geodetic_coords[:, 2]
 
-# show last position coordinates
 # Custom function to convert matplotlib colormap to Plotly colorscale
-
-def mpl_to_plotly_colormap(cmap, num_colors=256):
-    colors = [mcolors.rgb2hex(cmap(i)[:3]) for i in range(num_colors)]
-    scale = np.linspace(0, 1, num=num_colors)
-    return [list(a) for a in zip(scale, colors)]
-
+altitudes = altitudes / 1000 # convert to km
 colormap = cm.get_cmap('plasma')
 custom_colorscale = mpl_to_plotly_colormap(colormap)
-vmin, vmax = np.min(altitude), np.max(altitude)
-normalized_altitude = (altitude - vmin) / (vmax - vmin)
+vmin, vmax = np.min(altitudes), np.max(altitudes)
+normalized_altitude = (altitudes - vmin) / (vmax - vmin)
 
 # Number of subdivisions in the color scale
 num_subdivisions = 10
@@ -547,19 +579,24 @@ num_subdivisions = 10
 tickvals = np.linspace(0, 1, num_subdivisions)
 ticktext = [f"{vmin + tick * (vmax - vmin):.2f}" for tick in tickvals]
 
+# Add the final position label
+final_lat_str = f"{latitudes[-1]:.5f}"
+final_lon_str = f"{longitudes[-1]:.5f}"
+final_position_label = f"Final position<br>Lat: {final_lat_str}º North,<br>Lon: {final_lon_str}º East,<br>{altitudes[-1]:.2f} km Altitude"
+
 with st.spinner("Generating Groundtrack map..."):
     # Add a single trace for the ground track
     fig7.add_trace(go.Scattergeo(
         lon=longitudes,
         lat=latitudes,
-        mode='lines+markers',
+        mode='markers',
         marker=dict(
             color=normalized_altitude,
             size=2,
             colorscale=custom_colorscale,
             showscale=True,
             colorbar=dict(
-                title="Altitude (m)",
+                title="Altitude (km)",
                 tickvals=tickvals,
                 ticktext=ticktext,
             ),
@@ -567,16 +604,41 @@ with st.spinner("Generating Groundtrack map..."):
         showlegend=True,
         name='Groundtrack',
     ))
+    # Add lines with colors from the color scale
+    for i in range(len(longitudes) - 1):
+        start_lat, start_lon = latitudes[i], longitudes[i]
+        end_lat, end_lon = latitudes[i + 1], longitudes[i + 1]
 
+        line_color = get_color(normalized_altitude[i], colormap)
+        fig7.add_trace(go.Scattergeo(
+            lon=[start_lon, end_lon],
+            lat=[start_lat, end_lat],
+            mode='lines',
+            line=dict(color=line_color, width=2),
+        showlegend=False,
+        name='Groundtrack',
+        ))
 
     # add point for starting point and another for final position
     fig7.add_trace(go.Scattergeo(
-        lon=[longitudes[-1]],
         lat=[latitudes[-1]],
-        mode='markers',
-        marker=dict(color='orange', size=10),
+        lon=[longitudes[-1]],
+        marker={
+            "color": "Red",
+            "line": {
+                "width": 1
+            },
+            "size": 10
+        },
+        mode="markers+text",
+        name="Final position",
+        text=[final_position_label],
+        textfont={
+            "color": "White",
+            "size": 16
+        },
+        textposition="top right",
         showlegend=True,
-        name='Final position'
     ))
     fig7.add_trace(go.Scattergeo(
         lon=[longitudes[0]],
@@ -605,12 +667,70 @@ with st.spinner("Generating Groundtrack map..."):
             projection=dict(type='equirectangular'),
             lonaxis=dict(range=[-180, 180], showgrid=True, gridwidth=0.5, gridcolor='rgba(0, 0, 255, 0.5)'),
             lataxis=dict(range=[-90, 90], showgrid=True, gridwidth=0.5, gridcolor='rgba(0, 0, 255, 0.5)'),
-        )
+        ),
     )
     fig7.update_geos(resolution=110)
     fig7.update_layout(legend=dict(y=1.1, yanchor="top", xanchor="left", x=0, orientation="h"))
     st.plotly_chart(fig7, use_container_width=True)
 #--------------------------------------------------------------------------------
+
+# Plot the velocity vs time
+#--------------------------------------------
+st.subheader("Velocity vs Time")
+''' 
+Here you can see the velocity of the spacecraft both in absolute magnitude as well as in the x, y, and z directions.
+One particularly useful measure is the ground velocity vs the orbital velocity.
+'''
+with st.spinner("Generating Velocity vs time graph..."):
+    fig5 = go.Figure()
+    
+    ground_velocity_ecef = np.linalg.norm(v_ecef_vals[:, :2], axis=1)  # Magnitude of ground velocity in ECEF frame
+    vertical_velocity_ecef = v_ecef_vals[:, 2]  # Vertical velocity in ECEF frame
+
+    ground_velocity_geodetic = np.zeros(len(t_sol))
+    vertical_velocity_geodetic = np.zeros(len(t_sol))
+
+    for i, (lat, lon, alt) in enumerate(geodetic_coords):
+        lat_rad, lon_rad = np.radians(lat), np.radians(lon)
+        rotation_matrix = np.array([[-np.sin(lon_rad), -np.cos(lon_rad) * np.sin(lat_rad), np.cos(lon_rad) * np.cos(lat_rad)],
+                                    [np.cos(lon_rad), -np.sin(lon_rad) * np.sin(lat_rad), np.sin(lon_rad) * np.cos(lat_rad)],
+                                    [0, np.cos(lat_rad), np.sin(lat_rad)]])
+
+        v_geodetic = np.dot(rotation_matrix, v_ecef_vals[i])
+        ground_velocity_geodetic[i] = np.linalg.norm(v_geodetic[:2])
+        vertical_velocity_geodetic[i] = v_geodetic[2]
+
+    ground_velocity_magnitudes = np.linalg.norm(sol.y[3:5, :], axis=0)
+    
+    orbital_velocity = np.linalg.norm(sol.y[3:6, :], axis=0)
+    
+    fig5.add_trace(go.Scatter(x=t_sol, y=orbital_velocity, mode='lines', line=dict(color='white', width=2), name='Orbital Velocity'))
+
+    fig5.add_trace(go.Scatter(x=t_sol, y=ground_velocity_ecef, mode='lines', line=dict(color='orange', width=2), name='Ground Velocity (ECEF)'))
+    fig5.add_trace(go.Scatter(x=t_sol, y=vertical_velocity_ecef, mode='lines', line=dict(color='yellow', width=2), name='Vertical Velocity (ECEF)'))
+
+    fig5.add_trace(go.Scatter(x=t_sol, y=ground_velocity_geodetic, mode='lines', line=dict(color='purple', width=2), name='Ground Velocity (Geodetic)'))
+    fig5.add_trace(go.Scatter(x=t_sol, y=vertical_velocity_geodetic, mode='lines', line=dict(color='brown', width=2), name='Vertical Velocity (Geodetic)'))
+
+    fig5.add_trace(go.Scatter(x=t_sol, y=sol.y[3, :], mode='lines', line=dict(color='blue', width=2), name='X Velocity'))
+    fig5.add_trace(go.Scatter(x=t_sol, y=sol.y[4, :], mode='lines', line=dict(color='red', width=2), name='Y Velocity'))
+    fig5.add_trace(go.Scatter(x=t_sol, y=sol.y[5, :], mode='lines', line=dict(color='green', width=2), name='Z Velocity'))
+
+    # calculate highest value and lowest in the chart given allthe data
+    max_velocity = max(np.max(ground_velocity_ecef), np.max(vertical_velocity_ecef), np.max(ground_velocity_geodetic), np.max(vertical_velocity_geodetic), np.max(sol.y[3, :]), np.max(sol.y[4, :]), np.max(sol.y[5, :]))
+    min_velocity = min(np.min(ground_velocity_ecef), np.min(vertical_velocity_ecef), np.min(ground_velocity_geodetic), np.min(vertical_velocity_geodetic), np.min(sol.y[3, :]), np.min(sol.y[4, :]), np.min(sol.y[5, :]))
+
+    if crossing_points is not None:
+        for idx, crossing_point in enumerate(crossing_points):
+            fig5.add_shape(type='line', x0=crossing_point, x1=crossing_point, y0=min_velocity, y1=max_velocity, yref='y', xref='x', line=dict(color='rgba(255, 0, 0, 0.5)', width=2, dash='dot'))
+            fig5.add_annotation(x=crossing_point, y=max_velocity, text=f'Crossing Karman line {idx+1}', showarrow=True, font=dict(size=10), xanchor='center', yshift=10)
+
+    if altitude_event_times.size > 0:
+        fig5.add_shape(type='line', x0=[touchdown_time], x1=[touchdown_time], y0=min_velocity, y1=max_velocity, yref='y', xref='x', line=dict(color='rgba(0, 255, 0, 0.5)', width=2, dash='dot'))
+        fig5.add_annotation(x=[touchdown_time], y=max_velocity, text='Touchdown', showarrow=True, font=dict(size=10), xanchor='center', yshift=10)
+
+    fig5.update_layout(xaxis_title='Time (s)', yaxis_title='Velocity (m/s)',legend=dict(y=1.2, yanchor="top", xanchor="left", x=0, orientation="h"),hovermode="x unified")
+    st.plotly_chart(fig5, use_container_width=True)
 
 # Plot an acceleration vs time graph
 #--------------------------------------------------------------------------------
@@ -678,7 +798,7 @@ where:
 - $q$: heat rate (W)
 - $\rho$: atmospheric density (kg/m³)
 - $V$: spacecraft velocity (m/s) in the ECI frame
-- $C_p$: spacecraft heat transfer coefficient (W/m²·K)
+- $C_p$: spacecraft heat transfer coefficient (W)
 - $A$: spacecraft cross-sectional area (m²)
 
 The model assumes constant atmospheric density, spacecraft parameters (e.g., cross-sectional area, heat transfer coefficient), and specific heat ratio. It is important to note that this is a simplified model and may not provide accurate heating predictions for real reentry scenarios. For more accurate estimations, consider using more complex models or simulation tools.
@@ -689,13 +809,110 @@ fig9 = go.Figure()
 fig9.add_trace(go.Scatter(x=sol.t, y=heat_rate, name='Heat rate'))
 fig9.update_layout(
     xaxis_title='Time (s)',
-    yaxis_title='Heat rate (W/m^2)',
+    yaxis_title='Heat rate (W)',
     autosize=True,
     margin=dict(l=0, r=0, t=60, b=0),
     legend=dict(y=1.1, yanchor="top", xanchor="left", x=0, orientation="h"),
     hovermode="x unified"
 )
 st.plotly_chart(fig9, use_container_width=True)
+
+
+# Explain atmospheric model used
+#--------------------------------------------------------------------------------
+st.subheader('The Atmospheric model')
+r'''
+The atmospheric model used in this simulation folows the US Standard Atmosphere and is a combination of linear and exponential models to estimate the temperature, pressure, and density of Earth's atmosphere at a given altitude. The model divides the atmosphere into different layers based on altitude breakpoints and uses different temperature gradients for each layer.
+'''
+r'''**Linear Model:**:s
+The linear model is used within the altitude intervals defined by `ALTITUDE_BREAKPOINTS`. For each interval, the temperature and pressure are calculated as follows:
+'''
+col5, col6 = st.columns(2)
+with col5.expander("Temperature"):
+    r'''
+    The temperature at a given altitude is calculated using the base temperature of the interval and the temperature gradient.
+
+     $$T = T_{base} + L \times (\text{altitude} - \text{altitude}_\text{base})$$
+
+    where $T$ is the temperature, $T_{base}$ is the base temperature of the interval, $L$ is the temperature gradient, and $\text{altitude}_\text{base}$ is the base altitude of the interval.
+    '''
+with col6.expander("Pressure"):
+    r'''
+    The pressure at a given altitude is calculated using the base pressure of the interval and the temperature obtained in the previous step.
+
+   - If the temperature gradient is zero:
+   
+     $$P = P_{base} \times \exp\left(-\frac{g \times M \times (\text{altitude} - \text{altitude}_\text{base})}{R \times T_{base}}\right)$$
+
+   - If the temperature gradient is not zero:
+   
+     $$P = P_{base} \times \left(\frac{T}{T_{base}}\right)^{-\frac{g \times M}{R \times L}}$$
+
+   where $P$ is the pressure, $P_{base}$ is the base pressure of the interval, $g$ is Earth's gravity, $M$ is Earth's air molar mass, $R$ is Earth's gas constant, and $T$ is the temperature obtained in the previous step.
+    '''
+
+r'''**Exponential Model:**
+
+If the altitude is higher than the highest altitude breakpoint, the exponential model is used to approximate the temperature and pressure:'''
+col7, col8 = st.columns(2)
+with col7.expander("Temperature"):
+    r'''
+    The temperature at this altitude is assumed to be constant and equal to the base temperature of the highest altitude breakpoint.
+
+     $$T = T_{base, last}$$
+    '''
+with col8.expander("Pressure"):
+    r'''
+    The pressure at this altitude is calculated using the base pressure of the highest altitude breakpoint and an exponential decay.
+
+     $$P = P_{base, last} \times \exp\left(-\frac{\text{altitude} - \text{altitude}_\text{base, last}}{H}\right)$$
+
+    where $H$ is the scale height.'''
+
+r'''**Density Calculation:**
+
+The density at any altitude is calculated using the ideal gas law:
+
+ $$\rho = \frac{P}{R_\text{gas} \times T}$$
+
+where $\rho$ is the density, $P$ is the pressure, $R_\text{gas}$ is the specific gas constant, and $T$ is the temperature.
+
+This atmospheric model provides an approximation of the density and temperature at different altitudes in Earth's atmosphere, taking into account the changes in temperature gradients and pressure throughout the atmospheric layers.
+'''
+altitudes = np.linspace(0, 100000, num=1000)
+temperatures = []
+densities = []
+temperatures = np.zeros(altitudes.shape)
+densities = np.zeros(altitudes.shape)
+
+for i, altitude in enumerate(altitudes):
+    rho, T = atmosphere_model(altitude)
+    temperatures[i] = T
+    densities[i] = rho
+
+# Create a Plotly chart with two x-axes
+fig = subplots.make_subplots(specs=[[{"secondary_y": True}]])
+fig.update_layout(xaxis2= {'anchor': 'y', 'overlaying': 'x', 'side': 'top'})
+
+# Add temperature trace
+fig.add_trace(go.Scatter(x=temperatures, y=altitudes, name='Temperature (K)', mode='lines'), secondary_y=False)
+
+# Add density trace
+fig.add_trace(go.Scatter(x=densities, y=altitudes, name='Density (kg/m³)', mode='lines'), secondary_y=True)
+fig.data[1].update(xaxis='x2')
+
+# Update layout
+fig.update_layout(
+    title='Atmospheric Temperature and Density vs. Altitude',
+    xaxis_title='Temperature (K)',
+    xaxis2_title='Density (kg/m³)',
+    yaxis_title='Altitude (m)',
+    legend_title='Parameters',
+    height = 800,
+)
+
+# Run Streamlit app
+st.plotly_chart(fig, use_container_width=True)
 
 '''
 That's it for this dashboard. Try more combinations to see the effects of different parameters on the trajectory. Also, try landing with low Gs (your spacecraft will thank you...)!
@@ -704,14 +921,14 @@ You can reach me on [Twitter](https://twitter.com/JohnMontenegro) or [Github](ht
 You can also visit my [personal website](https://monte-negro.space/).
 '''
 
-#--------------------------------------------------------------------------------
+
 # about this app
 st.sidebar.markdown('''
 **About this app**
 
-This app means to show the power of mixing streamlit, plotly, poliastro with scipy as the simulation engine.
-All the code is available on Github and is free to use.
-Many of these equations are a best effort to implement and are likely not the most accurate in their current form.
+This app means to show the power of mixing streamlit, plotly, poliastro with scipy as the simulation engine.:s
+All the code is available on Github and is free to use.:s
+Many of these equations are a best effort to implement and are likely not the most accurate in their current form.:s
 Therefore, any feedback is greatly welcome.
 You can reach me on [Twitter](https://twitter.com/JohnMontenegro) or [Github](https://github.com/JMMonte) or [Linkedin](https://www.linkedin.com/in/jmontenegrodesign/).
 You can also visit my [personal website](https://monte-negro.space/).

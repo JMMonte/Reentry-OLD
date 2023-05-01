@@ -1,180 +1,154 @@
+import math
 import numpy as np
 from astropy import units as u
-# from astropy.coordinates import get_sun
-from astropy.coordinates import EarthLocation, AltAz
+from numba import jit, njit
 
 #constants
+# Operations
+PI = np.pi
+DEG_TO_RAD = float(PI / 180.0) # degrees to radians
+RAD_TO_DEG = float(180.0 / PI) # radians to degrees
+JD_AT_0 = 2451545.0 # Julian date at 0 Jan 2000
 #Earth
+# Constants
+EARTH_R = 6378137.0  # Earth's mean radius in meters
+EARTH_FLATTENING = 1.0 / 298.257223563  # Earth's flattening factor (WGS84)
+EARTH_E2 = 2.0 * EARTH_FLATTENING - EARTH_FLATTENING**2  # Earth's second eccentricity squared
 EARTH_MU = 398600441800000.0  # gravitational parameter of Earth in m^3/s^2
-EARTH_R = 6378137.0  # radius of Earth in m
 EARTH_R_KM = 6378.137  # radius of Earth in m
 EARTH_R_POLAR = 6356752.3142  # polar radius of Earth in m
 EARTH_OMEGA = 7.292114146686322e-05  # Earth rotation speed in rad/s
 EARTH_J2 = 0.00108263 # J2 of Earth
 EARTH_MASS = 5.972e24  # Mass (kg)
+EARTH_ROT_S = 86164.0905  # Earth rotation period in seconds
+EARTH_ROTATION_RATE_DEG_PER_SEC = 360.0 / EARTH_ROT_S  # Earth rotation rate in degrees per second
 
+# matrixes ----------------------------------------------------------
+@jit
+def gst_to_rotation_matrix(gst):
+    R = np.array([[np.cos(gst), np.sin(gst), 0],
+                [-np.sin(gst), np.cos(gst), 0],
+                [0, 0, 1]])
+    return R
 
-class CoordinateConverter:
-    @staticmethod
-    def ecef_to_eci(x, y, z, gmst):
-        '''
-        Converts ECEF coordinates to ECI coordinates
-        :param x: x-coordinate in ECEF frame
-        :param y: y-coordinate in ECEF frame
-        :param z: z-coordinate in ECEF frame
-        :param gmst: Greenwich Mean Sidereal Time in degrees
-        :return: x, y, z coordinates in ECI frame
-        '''
-        theta = (gmst * u.deg).to_value(u.rad)  # Convert GMST to radians and extract the value
-        rotation_matrix = np.array([[np.cos(theta), -np.sin(theta), 0],
-                                    [np.sin(theta), np.cos(theta), 0],
-                                    [0, 0, 1]])
-        eci_coords = np.dot(rotation_matrix, np.array([x, y, z]))
-        return eci_coords
+@jit
+def ecef_to_enu_rotation_matrix(lat, lon):
+    lat_rad = DEG_TO_RAD * lat
+    lon_rad = DEG_TO_RAD * lon
 
+    R = np.array([[-np.sin(lon_rad), np.cos(lon_rad), 0],
+        [-np.sin(lat_rad) * np.cos(lon_rad), -np.sin(lat_rad) * np.sin(lon_rad), np.cos(lat_rad)],
+        [np.cos(lat_rad) * np.cos(lon_rad), np.cos(lat_rad) * np.sin(lon_rad), np.sin(lat_rad)]])
     
-    @staticmethod
-    def eci_to_ecef(x_eci, y_eci, z_eci, gmst):
-        '''
-        Converts ECI coordinates to ECEF coordinates
-        :param x_eci: x-coordinate in ECI frame
-        :param y_eci: y-coordinate in ECI frame
-        :param z_eci: z-coordinate in ECI frame
-        :param gmst: Greenwich Mean Sidereal Time in degrees
-        :return: x, y, z coordinates in ECEF frame
-        '''
-        R = np.array(
-            [
-                [np.cos(-gmst), -np.sin(-gmst), 0],
-                [np.sin(-gmst), np.cos(-gmst), 0],
-                [0, 0, 1]
-            ]
-        )
-        
-        ecef_coords = R @ np.array([x_eci, y_eci, z_eci])
-        return ecef_coords[0], ecef_coords[1], ecef_coords[2]
+    return R
 
+@jit
+def gst_to_angular_velocity_matrix(gst):
+    W = np.array([[-np.sin(gst), np.cos(gst), 0],
+                [-np.cos(gst), -np.sin(gst), 0],
+                [0, 0, 0]])
+    return W
+
+# conversions ---------------------------------------------------------------
+
+def eci_to_ecef(vector_eci, gmst):
+    # Calculate the rotation matrix
+    cos_gmst = np.cos(gmst)
+    sin_gmst = np.sin(gmst)
+    rotation_matrix = np.array([[cos_gmst, sin_gmst, 0],
+                                [-sin_gmst, cos_gmst, 0],
+                                [0, 0, 1]])
+
+    # Convert the ECI vector to ECEF
+    vector_ecef = np.dot(rotation_matrix, vector_eci)
+    return vector_ecef
+
+
+def ecef_to_eci(vector_ecef, gmst):
+    # Calculate the rotation matrix (transpose of the ECI to ECEF rotation matrix)
+    cos_gmst = np.cos(gmst)
+    sin_gmst = np.sin(gmst)
+    rotation_matrix = np.array([[cos_gmst, -sin_gmst, 0],
+                                [sin_gmst, cos_gmst, 0],
+                                [0, 0, 1]])
+
+    # Convert the ECEF vector to ECI
+    vector_eci = np.dot(rotation_matrix, vector_ecef)
+    return vector_eci
+
+
+def geodetic_to_spheroid(lat, lon, alt):
+    lat = DEG_TO_RAD * lat
+    lon = DEG_TO_RAD * lon
+    N = EARTH_R / np.sqrt(1 - EARTH_E2 * np.sin(lat)**2)
+    x = (N + alt) * np.cos(lat) * np.cos(lon)
+    y = (N + alt) * np.cos(lat) * np.sin(lon)
+    z = ((1 - EARTH_E2) * N + alt) * np.sin(lat)
+    return x, y, z
+
+
+def ecef_to_geodetic(x, y, z, max_iter=100, tol=1e-6):
+    p = np.sqrt(x**2 + y**2)
+    theta = np.arctan2(z * EARTH_R, p * (1 - EARTH_E2 * EARTH_R))
+    lat = np.arctan2(z + EARTH_E2 * EARTH_R * np.sin(theta)**3, p - EARTH_E2 * EARTH_R * np.cos(theta)**3)
+
+    for _ in range(max_iter):
+        N = EARTH_R / np.sqrt(1 - EARTH_E2 * np.sin(lat)**2)
+        h = p / np.cos(lat) - N
+        lat_new = np.arctan2(z / p, 1 - EARTH_E2 * N / (N + h))
+        if np.abs(lat - lat_new) < tol:
+            break
+        lat = lat_new
+
+    lon = np.arctan2(y, x)
+    return np.degrees(lat), np.degrees(lon), h
+
+
+def eci_velocity_to_ground_velocity(v_eci, lat, lon, gst):
+    R = gst_to_rotation_matrix(gst)
+    W = gst_to_angular_velocity_matrix(gst)
     
-    @staticmethod
-    def geo_to_spheroid(lat, lon, alt=0, R_equatorial=EARTH_R, R_polar=EARTH_R_POLAR):
-        '''
-        Converts geodetic coordinates to spheroid coordinates
-        :param lat: latitude in degrees
-        :param lon: longitude in degrees
-        :param alt: altitude in meters
-        :param R_equatorial: equatorial radius of the Earth in meters
-        :param R_polar: polar radius of the Earth in meters
-        '''
-        lat_rad = np.radians(lat)
-        lon_rad = np.radians(lon)
-        R_lat = (R_equatorial * R_polar) / np.sqrt((R_equatorial * np.cos(lat_rad))**2 + (R_polar * np.sin(lat_rad))**2)
-        
-        x = (R_lat + alt) * np.cos(lat_rad) * np.cos(lon_rad)
-        y = (R_lat + alt) * np.cos(lat_rad) * np.sin(lon_rad)
-        z = (R_lat + alt) * np.sin(lat_rad)
-        
-        return x, y, z
-    
-    @staticmethod
-    def geo_to_ecef(lon_rad, lat_rad, alt=0):
-        '''
-        Converts geodetic coordinates to ECEF coordinates
-        :param lat_rad: latitude in radians
-        :param lon_rad: longitude in radians
-        :param alt: altitude in meters
-        :return: x, y, z coordinates in ECEF frame
-        '''
-        a = EARTH_R  # Earth's equatorial radius in meters (WGS-84)
-        f = 1 / 298.257223563  # Earth's flattening factor (WGS-84)
-        e2 = 2 * f - f**2  # Earth's eccentricity squared (WGS-84)
+    v_ecef = R @ v_eci + W @ np.array([EARTH_R * np.cos(lat) * np.cos(lon),
+                                       EARTH_R * np.cos(lat) * np.sin(lon),
+                                       EARTH_R * np.sin(lat)])
 
-        N = a / np.sqrt(1 - e2 * np.sin(lat_rad)**2)  # Prime vertical radius of curvature
-        x = (N + alt) * np.cos(lat_rad) * np.cos(lon_rad)
-        y = (N + alt) * np.cos(lat_rad) * np.sin(lon_rad)
-        z = ((1 - e2) * N + alt) * np.sin(lat_rad)
+    return v_ecef
 
-        return x, y, z # ECEF coordinates in meters
-    
-    @staticmethod
-    def ecef_to_geo(x, y, z):
-        '''
-        Converts ECEF coordinates to geodetic coordinates
-        :param x: x-coordinate in ECEF frame
-        :param y: y-coordinate in ECEF frame
-        :param z: z-coordinate in ECEF frame
-        :return: latitude, longitude, and altitude in that order
-        '''
-        a = EARTH_R  # Earth's equatorial radius in meters (WGS-84)
-        f = 1 / 298.257223563  # Earth's flattening factor (WGS-84)
-        e2 = 2 * f - f**2  # Earth's eccentricity squared (WGS-84)
 
-        lon_rad = np.arctan2(y, x) # Longitude is easy
-        p = np.sqrt(x**2 + y**2) # Distance from z-axis
-        lat_rad = np.arctan2(z, p * (1 - e2)) # Numerator is z-coordinate, denominator corrected for flattening
-        alt = p / np.cos(lat_rad) - a / np.sqrt(1 - e2 * np.sin(lat_rad)**2) # Altitude in meters
+def ecef_to_enu(x_ecef, y_ecef, z_ecef, lat, lon):
+    x = -np.cos(DEG_TO_RAD*lon)*np.sin(DEG_TO_RAD*lat)*x_ecef - np.sin(DEG_TO_RAD*lon)*np.sin(DEG_TO_RAD*lat)*y_ecef + np.cos(DEG_TO_RAD*lat)*z_ecef
+    y = -np.sin(DEG_TO_RAD*lon)*x_ecef + np.cos(DEG_TO_RAD*lon)*y_ecef
+    z = np.cos(DEG_TO_RAD*lon)*np.cos(DEG_TO_RAD*lat)*x_ecef + np.sin(DEG_TO_RAD*lon)*np.cos(DEG_TO_RAD*lat)*y_ecef + np.sin(DEG_TO_RAD*lat)*z_ecef
+    return x, y, z
 
-        return lat_rad, lon_rad, alt # Return latitude, longitude, and altitude in that order
-    
-    @staticmethod
-    def eci_velocity_to_ground_velocity(v_eci, lat, lon, gmst):
-        '''
-        Converts ECI velocity to ground velocity
-        :param v_eci: velocity vector in ECI frame
-        :param lat: latitude in degrees
-        :param lon: longitude in degrees
-        :param gmst: Greenwich Mean Sidereal Time in degrees
-        :return: velocity vector in ENU frame
-        '''
-        v_ecef = CoordinateConverter.eci_to_ecef(v_eci[0], v_eci[1], v_eci[2], gmst)
-        v_enu = CoordinateConverter.ecef_to_enu(v_ecef[0], v_ecef[1], v_ecef[2], lat, lon)
-        return v_enu
-    
-    @staticmethod
-    def ecef_to_enu(v_x_ecef, v_y_ecef, v_z_ecef, lat, lon):
-        lat_rad = np.deg2rad(lat)
-        lon_rad = np.deg2rad(lon)
 
-        v_east = (-v_x_ecef * np.sin(lon_rad)) + (v_y_ecef * np.cos(lon_rad))
-        v_north = (-v_x_ecef * np.sin(lat_rad) * np.cos(lon_rad)) - (v_y_ecef * np.sin(lat_rad) * np.sin(lon_rad)) + (v_z_ecef * np.cos(lat_rad))
-        v_up = (v_x_ecef * np.cos(lat_rad) * np.cos(lon_rad)) + (v_y_ecef * np.cos(lat_rad) * np.sin(lon_rad)) + (v_z_ecef * np.sin(lat_rad))
+def enu_to_ecef(v_enu, lat, lon):
+    lat_rad = DEG_TO_RAD * lat
+    lon_rad = DEG_TO_RAD * lon
 
-        return np.array([v_east, v_north, v_up])
-    
-    @staticmethod
-    def ecef_distance(x1, y1, z1, x2, y2, z2):
-        '''
-        Returns the distance between two points in ECEF coordinates
-        :param x1: x-coordinate of first point
-        :param y1: y-coordinate of first point
-        :param z1: z-coordinate of first point
-        :param x2: x-coordinate of second point
-        :param y2: y-coordinate of second point
-        :param z2: z-coordinate of second point
-        :return: distance between the two points
-        '''
-        return np.sqrt((x2 - x1)**2 + (y2 - y1)**2 + (z2 - z1)**2)
-    # @staticmethod
-    # def solar_zenith_angle(final_time):
-    #     sun_coord = get_sun(final_time)
-        
-    #     lats = np.linspace(-90, 90, num=91)  # Reduced number of points
-    #     lons = np.linspace(-180, 180, num=181)  # Reduced number of points
-        
-    #     lat_grid, lon_grid = np.meshgrid(lats, lons)
-        
-    #     location = EarthLocation.from_geodetic(lon_grid, lat_grid, height=0)
-    #     altaz_frame = AltAz(obstime=final_time, location=location)
-    #     altaz_sun = sun_coord.transform_to(altaz_frame)
+    R = np.array([[-np.sin(lon_rad), -np.sin(lat_rad) * np.cos(lon_rad), np.cos(lat_rad) * np.cos(lon_rad)],
+                  [np.cos(lon_rad), -np.sin(lat_rad) * np.sin(lon_rad), np.cos(lat_rad) * np.sin(lon_rad)],
+                  [0, np.cos(lat_rad), np.sin(lat_rad)]])
 
-    #     sza = 90 - altaz_sun.alt.deg
-        
-    #     return sza, lat_grid, lon_grid
-    
-    @staticmethod
-    def night_side_coordinates(sza, lat_grid, lon_grid):
-        night_side_mask = sza > 90
+    v_ecef = R @ v_enu
 
-        night_side_lats = lat_grid[night_side_mask].flatten().tolist()
-        night_side_lons = lon_grid[night_side_mask].flatten().tolist()
+    return v_ecef
 
-        return night_side_lons, night_side_lats
+
+def ecef_distance(x1, y1, z1, x2, y2, z2):
+    dx = x1 - x2
+    dy = y1 - y2
+    dz = z1 - z2
+    return np.sqrt(dx**2 + dy**2 + dz**2)
+
+def haversine_distance(lat1, lon1, lat2, lon2, R=EARTH_R):
+    lat1_rad, lon1_rad = math.radians(lat1), math.radians(lon1)
+    lat2_rad, lon2_rad = math.radians(lat2), math.radians(lon2)
+
+    delta_lat = lat2_rad - lat1_rad
+    delta_lon = lon2_rad - lon1_rad
+
+    a = math.sin(delta_lat / 2)**2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(delta_lon / 2)**2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+    return R * c

@@ -1,9 +1,12 @@
 import plotly.graph_objects as go
 import numpy as np
 from poliastro.bodies import Earth
-from coordinate_converter import CoordinateConverter
+from coordinate_converter import (ecef_to_eci, geodetic_to_spheroid)
 import astropy.units as u
 from astropy.coordinates import CartesianRepresentation
+from poliastro.twobody import Orbit
+import shapely.geometry as sgeom
+
 
 class SpacecraftVisualization:
     @staticmethod
@@ -15,9 +18,17 @@ class SpacecraftVisualization:
         :return: plotly trace
         '''
         lons, lats = geometry.xy
-        x, y, z = CoordinateConverter.geo_to_ecef(np.deg2rad(lons), np.deg2rad(lats))
-        x, y, z = CoordinateConverter.ecef_to_eci(x, y, z, gmst)
-        trace = go.Scatter3d(x=x, y=y, z=z, mode='lines', line=dict(color='blue', width=2),hoverinfo='none')
+        N = len(lats)
+        x_eci, y_eci, z_eci = np.zeros(N), np.zeros(N), np.zeros(N)
+
+        for i in range(N):
+            x, y, z = geodetic_to_spheroid(lats[i], lons[i], alt=0)
+            r_ecef = np.array([x, y, z])
+
+            r_eci = ecef_to_eci(r_ecef , gmst)
+            x_eci[i], y_eci[i], z_eci[i] = r_eci
+
+        trace = go.Scatter3d(x=x_eci, y=y_eci, z=z_eci, mode='lines', line=dict(color='blue', width=2), hoverinfo='none')
         return trace
 
     @staticmethod
@@ -39,43 +50,49 @@ class SpacecraftVisualization:
         return trace_list
     
     @staticmethod
-    def create_latitude_lines(N=50, gmst=0):
-        '''
-        Creates a list of plotly traces for latitude lines
-        :param N: number of points to use for each latitude line
-        :param gmst: Greenwich Mean Sidereal Time in degrees
-        :return: list of plotly traces
-        '''
-        lat_lines = []
-        lon = np.linspace(-180, 180, N)
-        lat_space = np.linspace(-90, 90, N // 2)
-        for lat in lat_space:
-            lons = np.full_like(lon, lat)
-            x, y, z = CoordinateConverter.geo_to_ecef(np.deg2rad(lon), np.deg2rad(lons))
-            x, y, z = CoordinateConverter.ecef_to_eci(x, y, z, gmst)
-            lat_lines.append(go.Scatter3d(x=x, y=y, z=z, mode='lines', hoverinfo='none', line=dict(color='blue', width=1)))
-        return lat_lines
+    def create_latitude_lines(gmst):
+        traces = []
+
+        for lat in range(-90, 91, 30):
+            geometry = sgeom.LineString([(lon, lat) for lon in range(-180, 181, 1)])
+            lons, lats = geometry.xy
+            N = len(lats)
+            x_eci, y_eci, z_eci = np.zeros(N), np.zeros(N), np.zeros(N)
+
+            for i in range(N):
+                x, y, z = geodetic_to_spheroid(lats[i], lons[i], alt=0)
+                r_ecef = np.array([x, y, z])
+
+                r_eci = ecef_to_eci(r_ecef, gmst)
+                x_eci[i], y_eci[i], z_eci[i] = r_eci
+
+            trace = go.Scatter3d(x=x_eci, y=y_eci, z=z_eci, mode='lines', line=dict(color='blue', width=2), hoverinfo='none')
+            traces.append(trace)
+        return traces
 
     @staticmethod
-    def create_longitude_lines(N=50, gmst=0):
-        '''
-        Creates a list of plotly traces for longitude lines
-        :param N: number of points to use for each longitude line
-        :param gmst: Greenwich Mean Sidereal Time in degrees
-        :return: list of plotly traces
-        '''
-        lon_lines = []
-        lat = np.linspace(-90, 90, N)
-        lon_space = np.linspace(-180, 180, N)
-        for lon in lon_space:
-            lons = np.full_like(lat, lon)
-            x, y, z = CoordinateConverter.geo_to_ecef(np.deg2rad(lons), np.deg2rad(lat))
-            x, y, z = CoordinateConverter.ecef_to_eci(x, y, z, gmst)
-            lon_lines.append(go.Scatter3d(x=x, y=y, z=z, mode='lines', hoverinfo='none', line=dict(color='blue', width=1)))
-        return lon_lines
+    def create_longitude_lines(gmst):
+        traces = []
+
+        for lon in range(-180, 180, 30):
+            geometry = sgeom.LineString([(lon, lat) for lat in range(-90, 91, 1)])
+            lons, lats = geometry.xy
+            N = len(lats)
+            x_eci, y_eci, z_eci = np.zeros(N), np.zeros(N), np.zeros(N)
+
+            for i in range(N):
+                x, y, z = geodetic_to_spheroid(lats[i], lons[i], alt=0)
+                r_ecef = np.array([x, y, z])
+
+                r_eci = ecef_to_eci(r_ecef, gmst)
+                x_eci[i], y_eci[i], z_eci[i] = r_eci
+
+            trace = go.Scatter3d(x=x_eci, y=y_eci, z=z_eci, mode='lines', line=dict(color='blue', width=2), hoverinfo='none')
+            traces.append(trace)
+        return traces
 
     @staticmethod
-    def create_spheroid_mesh(N=50, attractor=Earth):
+    def create_spheroid_mesh(N=50):
         '''
         Creates a plotly mesh trace for a spheroid
         :param N: number of points to use for each latitude and longitude line
@@ -87,10 +104,9 @@ class SpacecraftVisualization:
         lat_grid, lon_grid = np.meshgrid(lat, lon)
 
         lat_rad_grid = np.radians(lat_grid)
-        lon_rad_grid = np.radians(lon_grid)
         alt_grid = np.zeros_like(lat_rad_grid)
 
-        x, y, z = CoordinateConverter.geo_to_ecef(lon_rad_grid, lat_rad_grid, alt_grid)
+        x, y, z = geodetic_to_spheroid(lat_grid, lon_grid, alt_grid)
 
         return go.Mesh3d(
             x=x.flatten(), y=y.flatten(), z=z.flatten(),
@@ -185,3 +201,38 @@ class SpacecraftVisualization:
                 crossing_points_time.append(t_sol[i])
         return crossing_points_downrange, crossing_points_time
     
+# test this class
+if __name__ == '__main__':
+    # Create a figure
+    fig = go.Figure()
+
+    # Add the spheroid mesh trace
+    fig.add_trace(SpacecraftVisualization.create_spheroid_mesh())
+
+    # Add the latitude and longitude lines
+    fig.add_traces(SpacecraftVisualization.create_latitude_lines())
+    fig.add_traces(SpacecraftVisualization.create_longitude_lines())
+
+    # Add the Earth texture
+    fig.add_trace(SpacecraftVisualization.create_earth_texture())
+
+    # Add the orbit trace
+    fig.add_trace(SpacecraftVisualization.plot_orbit_3d(Orbit.circular(Earth, 400 * u.km), num_points=1000, color='red'))
+
+    # Add the satellite trace
+    fig.add_trace(SpacecraftVisualization.create_3d_scatter([0], [0], [0], ['red'], 'Satellite'))
+
+    # Set the scene
+    fig.update_layout(scene=dict(
+        xaxis=dict(showgrid=False, showticklabels=False, zeroline=False, title=dict(text='')),
+        yaxis=dict(showgrid=False, showticklabels=False, zeroline=False, title=dict(text='')),
+        zaxis=dict(showgrid=False, showticklabels=False, zeroline=False, title=dict(text='')),
+        aspectmode='manual',
+        aspectratio=dict(x=1, y=1, z=1),
+        camera=dict(
+            eye=dict(x=1.25, y=1.25, z=1.25)
+        )
+    ))
+
+    # Show the figure
+    fig.show()
