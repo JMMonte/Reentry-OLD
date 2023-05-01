@@ -3,6 +3,11 @@ from astropy.time import Time
 from coordinate_converter import (enu_to_ecef, ecef_to_eci, geodetic_to_spheroid, eci_to_ecef)
 import numpy as np
 from scipy.integrate import solve_ivp
+from poliastro.core.perturbations import (
+    atmospheric_drag_exponential,
+    third_body,
+    J2_perturbation,
+)
 
 
 import time
@@ -14,6 +19,7 @@ PI = np.pi
 DEG_TO_RAD = float(PI / 180.0) # degrees to radians
 RAD_TO_DEG = float(180.0 / PI) # radians to degrees
 JD_AT_0 = 2451545.0 # Julian date at 0 Jan 2000
+G = 6.67430e-11  # m^3 kg^-1 s^-2, gravitational constant
 
 #Earth physical constants
 EARTH_MU = 3.986004418e14  # gravitational parameter of Earth in m^3/s^2
@@ -46,6 +52,7 @@ MOON_ROT_D = 27.321661  # Rotation period in days
 MOON_ROT_S = MOON_ROT_D * 24 * 3600  # Rotation period in seconds
 MOON_MMOTION_DEG =  360 / MOON_ROT_D # Mean motion (degrees/day)
 MOON_MMOTION_RAD = MOON_MMOTION_DEG * DEG_TO_RAD  # Mean motion (radians/day)
+MOON_K = 4.9048695e12  # Surface gravity (m/s^2)
 
 #Sun
 SUN_MU = 132712442099.00002 # gravitational parameter of Sun in km^3/s^2
@@ -56,6 +63,7 @@ SUN_OMEGA = -11.26064 * DEG_TO_RAD  # Longitude of ascending node (radians)
 SUN_W = 102.94719 * DEG_TO_RAD  # Argument of perigee (radians)
 SUN_L0 = 100.46435 * DEG_TO_RAD  # Mean longitude at epoch J2000 (radians)
 SUN_MASS = 1.988544e30  # Mass (kg)
+SUN_K = 1.32712440042e20  # Surface gravity (m/s^2)
 
 # Atmosphere
 # U.S. Standard Atmosphere altitude breakpoints and temperature gradients (m, K/m)
@@ -194,23 +202,15 @@ def sun_position_vector(jd):
     return np.array([x, y, z])
 
 @jit(nopython=True)
-def third_body_acceleration(satellite_position, third_body_position, satellite_mass, third_body_mass):
-    # Vector from the satellite to the third body
+def third_body_acceleration(satellite_position, third_body_position, k_third):
+    # Calculate the vector from the satellite to the third body
     r_satellite_to_third_body = third_body_position - satellite_position
 
-    # Gravitational constant
-    G = 6.67430e-11  # m^3 kg^-1 s^-2
+    return (
+        k_third * r_satellite_to_third_body / euclidean_norm(r_satellite_to_third_body) ** 3
+        - k_third * third_body_position / euclidean_norm(third_body_position) ** 3
+    )
 
-    # Acceleration due to the third body
-    a_third_body = G * third_body_mass * r_satellite_to_third_body / euclidean_norm(r_satellite_to_third_body)**3
-
-    # Acceleration that Earth would experience due to the third body
-    a_earth = G * third_body_mass * third_body_position / euclidean_norm(third_body_position)**3
-
-    # Perturbation acceleration acting on the satellite
-    a_perturbation = a_third_body - a_earth
-
-    return a_perturbation / satellite_mass
 
 @jit(nopython=True)
 def J2_perturbation_numba(r, k, J2, R):
@@ -282,8 +282,8 @@ class SpacecraftModel:
         a_J2 = J2_perturbation_numba(r_eci, k=EARTH_MU, J2=EARTH_J2, R=EARTH_R)
         moon_r = moon_position_vector(epoch.jd)
         sun_r = sun_position_vector(epoch.jd)
-        a_moon = third_body_acceleration(r_eci, moon_r, self.m, MOON_MASS)
-        a_sun = third_body_acceleration(r_eci, sun_r, self.m, SUN_MASS)
+        a_moon = third_body_acceleration(r_eci, moon_r, MOON_K)
+        a_sun = third_body_acceleration(r_eci, sun_r, SUN_K)
 
         # Calculate drag acceleration
         a_drag_ecef = atmospheric_drag(Cd=self.Cd, A=self.A, r_ecef=r_ecef, v_ecef=v_rel)
