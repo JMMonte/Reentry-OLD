@@ -1,10 +1,8 @@
 from astropy import units as u
 from astropy.time import Time
-from coordinate_converter import (enu_to_ecef, ecef_to_eci, geodetic_to_spheroid, eci_to_ecef, ecef_to_geodetic, ecef_to_enu_rotation_matrix, eci_velocity_to_ground_velocity)
+from coordinate_converter import (enu_to_ecef, ecef_to_eci, geodetic_to_spheroid, eci_to_ecef)
 import numpy as np
-from poliastro.core.perturbations import J2_perturbation
 from scipy.integrate import solve_ivp
-from scipy.optimize import root_scalar
 
 
 import time

@@ -1,7 +1,7 @@
 import math
 import numpy as np
 from astropy import units as u
-from numba import jit, njit
+from numba import jit
 
 #constants
 # Operations
@@ -23,32 +23,6 @@ EARTH_MASS = 5.972e24  # Mass (kg)
 EARTH_ROT_S = 86164.0905  # Earth rotation period in seconds
 EARTH_ROTATION_RATE_DEG_PER_SEC = 360.0 / EARTH_ROT_S  # Earth rotation rate in degrees per second
 
-# matrixes ----------------------------------------------------------
-@jit
-def gst_to_rotation_matrix(gst):
-    R = np.array([[np.cos(gst), np.sin(gst), 0],
-                [-np.sin(gst), np.cos(gst), 0],
-                [0, 0, 1]])
-    return R
-
-@jit
-def ecef_to_enu_rotation_matrix(lat, lon):
-    lat_rad = DEG_TO_RAD * lat
-    lon_rad = DEG_TO_RAD * lon
-
-    R = np.array([[-np.sin(lon_rad), np.cos(lon_rad), 0],
-        [-np.sin(lat_rad) * np.cos(lon_rad), -np.sin(lat_rad) * np.sin(lon_rad), np.cos(lat_rad)],
-        [np.cos(lat_rad) * np.cos(lon_rad), np.cos(lat_rad) * np.sin(lon_rad), np.sin(lat_rad)]])
-    
-    return R
-
-@jit
-def gst_to_angular_velocity_matrix(gst):
-    W = np.array([[-np.sin(gst), np.cos(gst), 0],
-                [-np.cos(gst), -np.sin(gst), 0],
-                [0, 0, 0]])
-    return W
-
 # conversions ---------------------------------------------------------------
 
 def eci_to_ecef(vector_eci, gmst):
@@ -60,10 +34,10 @@ def eci_to_ecef(vector_eci, gmst):
                                 [0, 0, 1]])
 
     # Convert the ECI vector to ECEF
-    vector_ecef = np.dot(rotation_matrix, vector_eci)
+    vector_ecef = rotation_matrix @ vector_eci
     return vector_ecef
 
-
+@jit
 def ecef_to_eci(vector_ecef, gmst):
     # Calculate the rotation matrix (transpose of the ECI to ECEF rotation matrix)
     cos_gmst = np.cos(gmst)
@@ -73,10 +47,10 @@ def ecef_to_eci(vector_ecef, gmst):
                                 [0, 0, 1]])
 
     # Convert the ECEF vector to ECI
-    vector_eci = np.dot(rotation_matrix, vector_ecef)
+    vector_eci = rotation_matrix @ vector_ecef
     return vector_eci
 
-
+@jit(nopython=True)
 def geodetic_to_spheroid(lat, lon, alt):
     lat = DEG_TO_RAD * lat
     lon = DEG_TO_RAD * lon
@@ -86,7 +60,7 @@ def geodetic_to_spheroid(lat, lon, alt):
     z = ((1 - EARTH_E2) * N + alt) * np.sin(lat)
     return x, y, z
 
-
+@jit(nopython=True)
 def ecef_to_geodetic(x, y, z, max_iter=100, tol=1e-6):
     p = np.sqrt(x**2 + y**2)
     theta = np.arctan2(z * EARTH_R, p * (1 - EARTH_E2 * EARTH_R))
@@ -103,25 +77,14 @@ def ecef_to_geodetic(x, y, z, max_iter=100, tol=1e-6):
     lon = np.arctan2(y, x)
     return np.degrees(lat), np.degrees(lon), h
 
-
-def eci_velocity_to_ground_velocity(v_eci, lat, lon, gst):
-    R = gst_to_rotation_matrix(gst)
-    W = gst_to_angular_velocity_matrix(gst)
-    
-    v_ecef = R @ v_eci + W @ np.array([EARTH_R * np.cos(lat) * np.cos(lon),
-                                       EARTH_R * np.cos(lat) * np.sin(lon),
-                                       EARTH_R * np.sin(lat)])
-
-    return v_ecef
-
-
+@jit(nopython=True)
 def ecef_to_enu(x_ecef, y_ecef, z_ecef, lat, lon):
     x = -np.cos(DEG_TO_RAD*lon)*np.sin(DEG_TO_RAD*lat)*x_ecef - np.sin(DEG_TO_RAD*lon)*np.sin(DEG_TO_RAD*lat)*y_ecef + np.cos(DEG_TO_RAD*lat)*z_ecef
     y = -np.sin(DEG_TO_RAD*lon)*x_ecef + np.cos(DEG_TO_RAD*lon)*y_ecef
     z = np.cos(DEG_TO_RAD*lon)*np.cos(DEG_TO_RAD*lat)*x_ecef + np.sin(DEG_TO_RAD*lon)*np.cos(DEG_TO_RAD*lat)*y_ecef + np.sin(DEG_TO_RAD*lat)*z_ecef
     return x, y, z
 
-
+@jit(nopython=True)
 def enu_to_ecef(v_enu, lat, lon):
     lat_rad = DEG_TO_RAD * lat
     lon_rad = DEG_TO_RAD * lon
@@ -134,13 +97,14 @@ def enu_to_ecef(v_enu, lat, lon):
 
     return v_ecef
 
-
+@jit(nopython=True)
 def ecef_distance(x1, y1, z1, x2, y2, z2):
     dx = x1 - x2
     dy = y1 - y2
     dz = z1 - z2
     return np.sqrt(dx**2 + dy**2 + dz**2)
 
+@jit(nopython=True)
 def haversine_distance(lat1, lon1, lat2, lon2, R=EARTH_R):
     lat1_rad, lon1_rad = math.radians(lat1), math.radians(lon1)
     lat2_rad, lon2_rad = math.radians(lat2), math.radians(lon2)
