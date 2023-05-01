@@ -46,7 +46,7 @@ The simulation uses the amazing [poliastro](https://docs.poliastro.space/en/stab
 
 1. Install electron globally by typing `npm install -g electron` in a terminal window.
 2. To run the electron app, open your terminal and run `./start.sh`. This will start the streamlit server and the electron app.
-3. When you close electron it will kill the streamlit server. 
+3. When you close electron it will kill the streamlit server.
 4. Make sure you have the port `8501` available before running the script.
 
 ## Customization

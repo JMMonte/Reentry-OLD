@@ -14,7 +14,7 @@ from spacecraft_model import SpacecraftModel
 from spacecraft_visualization import SpacecraftVisualization
 import streamlit as st
 import matplotlib.colors as mcolors
-import matplotlib.cm as cm
+import matplotlib as mpl
 from numba import jit
 from spacecraft_model import atmosphere_model
 import plotly.subplots as subplots
@@ -387,7 +387,7 @@ with st.spinner("Generating trajectory 3d plot..."):
     heat_rate_tickvals = np.linspace(0, 1, num_subdivisions)
     heat_rate_ticktext = [f"{vmin + tick * (vmax - vmin):.3E}" for tick in heat_rate_tickvals]
 
-    colormap = cm.get_cmap('plasma')
+    colormap = mpl.colormaps.get_cmap('plasma')
     custom_colorscale = mpl_to_plotly_colormap(colormap)
     fig_colorscale = go.Figure()
     fig_colorscale.add_trace(go.Heatmap(
@@ -567,7 +567,7 @@ altitudes = geodetic_coords[:, 2]
 
 # Custom function to convert matplotlib colormap to Plotly colorscale
 altitudes = altitudes / 1000 # convert to km
-colormap = cm.get_cmap('plasma')
+colormap = mpl.colormaps.get_cmap('plasma')
 custom_colorscale = mpl_to_plotly_colormap(colormap)
 vmin, vmax = np.min(altitudes), np.max(altitudes)
 normalized_altitude = (altitudes - vmin) / (vmax - vmin)
