@@ -1,9 +1,12 @@
 # .env
-/venv/
-/__pycache__/
+venv/
+.vscode/
+__pycache__/
 /data/
 
 # .gitignore
 basic_sim.ipynb
 reentry_sim.ipynb
 test.py
+capsule.py
+temperature_model.py
