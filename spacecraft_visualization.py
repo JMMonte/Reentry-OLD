@@ -12,7 +12,6 @@ import plotly.express as px
 base_radius = 1
 height_ratio = 1.315
 top_radius_ratio = 0.5
-
 truncation_ratio = 0.8
 
 metallic_colorscale = [
