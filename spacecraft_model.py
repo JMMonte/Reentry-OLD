@@ -101,7 +101,7 @@ def euclidean_norm(vec):
     return np.sqrt(vec[0] ** 2 + vec[1] ** 2 + vec[2] ** 2)
 
 @jit(nopython=True)
-def simplified_nrlmsise_00(altitude, latitude):
+def simplified_nrlmsise_00(altitude, latitude, solar_activity_factor):
     
     # Latitude factor (simplified)
     latitude_factor = 1 + 0.01 * np.abs(latitude) / 90.0
@@ -123,6 +123,8 @@ def simplified_nrlmsise_00(altitude, latitude):
     P *= latitude_factor
 
     rho = P / (R_GAS * T)
+
+    rho *= solar_activity_factor
 
     return rho, T
 
@@ -165,33 +167,22 @@ def atmosphere_model(altitude, latitude, jd_epoch, jd_solar_min=2454833.0, f107_
     else:
         # Calculate the solar activity factor
         factor = solar_activity_factor(jd_epoch, jd_solar_min, f107_average, solar_cycle_months)
-
-        # Calculate the density and temperature
-        rho, T = simplified_nrlmsise_00(altitude, latitude)
-        # make solar factor change with altitude (0 at surface, 1 at 50km and stay 1 above 50km)
-        if altitude < 50000:
-            factor = 1 - altitude / 50000 * np.exp(- factor)
-        elif altitude >= 50000:
-            factor = 1
-            if rho < 1e-20:
-                rho = 1e-20
-                T = T
-
-        rho *= factor
+        # Calculate the density and temperature using the simplified NRLMSISE-00 model
+        rho, T = simplified_nrlmsise_00(altitude, latitude, factor)
 
         return rho, T
     
 # test atmosphere_model
 # ---------------------------
-# altitude = 102010.012
-# latitude = 0
-# epoch=Time('2024-01-01 00:00:00').jd
-# jd_epoch = epoch + 1 / 86400
-# jd_solar_min = 2454833.0
-# f107_average = 150.0
-# solar_cycle_months = 132
-# rho, T = atmosphere_model(altitude, latitude, jd_epoch, jd_solar_min, f107_average, solar_cycle_months)
-# print(rho, T)
+altitude = 102010.012
+latitude = 0
+epoch=Time('2024-01-01 00:00:00').jd
+jd_epoch = epoch + 1 / 86400
+jd_solar_min = 2454833.0
+f107_average = 150.0
+solar_cycle_months = 132
+rho, T = atmosphere_model(altitude, latitude, jd_epoch, jd_solar_min, f107_average, solar_cycle_months)
+print(rho, T)
 
 @jit(nopython=True)
 def atmospheric_drag(Cd, A, atmospheric_rho, v, mass):

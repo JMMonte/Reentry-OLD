@@ -1123,13 +1123,13 @@ with st.expander("Click here to learn more about this simulator's atmospheric mo
     - $R_{gas}$ is the specific gas constant for Earth's air
     '''
 
-altitudes = np.linspace(0, 1000000, num=1000)
+altitudes_graph = np.linspace(0, 1000000, num=1000)
 temperatures = []
 densities = []
-temperatures = np.zeros(altitudes.shape)
-densities = np.zeros(altitudes.shape)
+temperatures = np.zeros(altitudes_graph.shape)
+densities = np.zeros(altitudes_graph.shape)
 
-for i, altitude in enumerate(altitudes):
+for i, altitude in enumerate(altitudes_graph):
     rho, T = atmosphere_model(altitude, 0 ,epoch.jd)
     temperatures[i] = T
     densities[i] = rho
@@ -1139,10 +1139,10 @@ fig_atmo = subplots.make_subplots(specs=[[{"secondary_y": True}]])
 fig_atmo.update_layout(xaxis2= {'anchor': 'y', 'overlaying': 'x', 'side': 'top'})
 
 # Add temperature trace
-fig_atmo.add_trace(go.Scatter(x=temperatures, y=altitudes, name='Temperature (K)', mode='lines', line=dict(color='red')), secondary_y=False)
+fig_atmo.add_trace(go.Scatter(x=temperatures, y=altitudes_graph, name='Temperature (K)', mode='lines', line=dict(color='red')), secondary_y=False)
 
 # Add density trace
-fig_atmo.add_trace(go.Scatter(x=densities, y=altitudes, name='Density (kg/m³)', mode='lines',line=dict(color='green')), secondary_y=False)
+fig_atmo.add_trace(go.Scatter(x=densities, y=altitudes_graph, name='Density (kg/m³)', mode='lines',line=dict(color='green')), secondary_y=False)
 fig_atmo.data[1].update(xaxis='x2')
 for layer in atmosphere_layers:
         fig_atmo.add_shape(type='rect', x0=0, x1=max(temperatures), y0=layer[0], y1=layer[1], yref='y', xref='x', line=dict(color='rgba(255, 0, 0, 0)', width=0), fillcolor=layer[2], opacity=0.3, name=layer[3])
