@@ -1,15 +1,9 @@
+import math
 from astropy import units as u
 from astropy.time import Time
-from coordinate_converter import (enu_to_ecef, ecef_to_eci, geodetic_to_spheroid, eci_to_ecef)
+from coordinate_converter import (enu_to_ecef, ecef_to_eci, geodetic_to_spheroid, eci_to_ecef, ecef_to_geodetic)
 import numpy as np
 from scipy.integrate import solve_ivp
-from poliastro.core.perturbations import (
-    atmospheric_drag_exponential,
-    third_body,
-    J2_perturbation,
-)
-
-
 import time
 from numba import jit, njit
 # Constants
@@ -64,18 +58,40 @@ SUN_W = 102.94719 * DEG_TO_RAD  # Argument of perigee (radians)
 SUN_L0 = 100.46435 * DEG_TO_RAD  # Mean longitude at epoch J2000 (radians)
 SUN_MASS = 1.988544e30  # Mass (kg)
 SUN_K = 1.32712440042e20  # Surface gravity (m/s^2)
+SOLAR_CONSTANT = 1361  # W/m^2
 
 # Atmosphere
 # U.S. Standard Atmosphere altitude breakpoints and temperature gradients (m, K/m)
 ALTITUDE_BREAKPOINTS = np.array([0, 11000, 20000, 32000, 47000, 51000, 71000, 84852])
 TEMPERATURE_GRADIENTS = np.array([-0.0065, 0, 0.001, 0.0028, 0, -0.0028, -0.002])
-# U.S. Standard Atmosphere base temperatures and pressures at altitude breakpoints (K, Pa)
 BASE_TEMPERATURES = np.array([288.15, 216.65, 216.65, 228.65, 270.65, 270.65, 214.65, 186.95])
 BASE_PRESSURES = np.array([101325, 22632.1, 5474.9, 868.02, 110.91, 66.939, 3.9564, 0.3734])
+# Earth atmosphere constants
 EARTH_AIR_MOLAR_MASS = 0.0289644 # molar mass of Earth's air (kg/mol)
 EARTH_GAS_CONSTANT = 8.31447 # Gas Constant Values based on Energy Units ; J · 8.31447, 3771.38
 R_GAS = 287.0  # J/kgK for air; This value is appropriate for air if Joule is chosen for the unit of energy, kg as unit of mass and K as unit of temperature, i.e. $ R = 287 \;$   J$ /($kg$ \;$K$ )$
 SCALE_HEIGHT = 7500.0  # Scale height (m)
+#Solar weather constants
+F107_MIN = 70.0
+F107_MAX = 230.0
+F107_AMPLITUDE = (F107_MAX - F107_MIN) / 2.0
+DAYS_PER_MONTH = 30.44  # Average number of days per month
+
+# Themodynamic constants
+GAMMA_AIR = 1.4  # Ratio of specific heats for air
+RECOVERY_FACTOR_AIR = 0.9  # Assuming laminar flow over a flat plate
+CP_AIR = 1005 # Specific heat of air at constant pressure (J/kg-K)
+STAG_K = 1.83e-4 # Stagnation point heat transfer coefficient (W/m^2-K^0.5)
+FLOW_TYPE_EXP = 0.5 # Flow type exponent (0.5 for laminar, 0.8 for turbulent)
+EMISSIVITY_SURF = 0.8 # Emissivity of surface
+STEFAN_BOLTZMANN_CONSTANT = 5.67e-8 # Stefan-Boltzmann constant (W/m^2-K^4)
+T_REF = 273.15  # Reference temperature in Kelvin
+MU_REF = 1.716e-5  # Reference dynamic viscosity in Pa.s
+SUTHERLAND_CONSTANT = 110.4  # Sutherland's constant in Kelvin
+CP_BASE = 1000  # Base specific heat at constant pressure at 298 K
+CP_RATE = 0.5  # Rate of change of specific heat with temperature
+K_AIR_COEFFICIENT = 2.64638e-3  # Coefficient for thermal conductivity of air
+
 
 # numba functions
 # ----------------
@@ -84,56 +100,200 @@ def euclidean_norm(vec):
     return np.sqrt(vec[0] ** 2 + vec[1] ** 2 + vec[2] ** 2)
 
 @jit(nopython=True)
-def earth_rotational_velocity(omega, r):
-    omega_cross_r = np.cross(np.array([0, 0, omega]), r)
-    return omega_cross_r
+def simplified_nrlmsise_00(altitude, latitude):
+    
+    # Latitude factor (simplified)
+    latitude_factor = 1 + 0.01 * np.abs(latitude) / 90.0
+
+    # Find the appropriate altitude layer
+    i = np.searchsorted(ALTITUDE_BREAKPOINTS, altitude, side='right') - 1
+    delta_altitude = altitude - ALTITUDE_BREAKPOINTS[i]
+    T = BASE_TEMPERATURES[i] + TEMPERATURE_GRADIENTS[i] * delta_altitude
+
+    if TEMPERATURE_GRADIENTS[i] == 0:
+        P = BASE_PRESSURES[i] * np.exp(-EARTH_GRAVITY * EARTH_AIR_MOLAR_MASS * delta_altitude / (EARTH_GAS_CONSTANT * BASE_TEMPERATURES[i]))
+    else:
+        P = BASE_PRESSURES[i] * (T / BASE_TEMPERATURES[i]) ** (-EARTH_GRAVITY * EARTH_AIR_MOLAR_MASS / (EARTH_GAS_CONSTANT * TEMPERATURE_GRADIENTS[i]))
+
+    if i == len(ALTITUDE_BREAKPOINTS) - 1:
+        P *= np.exp(-(altitude - ALTITUDE_BREAKPOINTS[-1]) / SCALE_HEIGHT)
+
+    # Apply the latitude factor
+    P *= latitude_factor
+
+    rho = P / (R_GAS * T)
+
+    return rho, T
+
+# test simplified_nrlmsise_00
+# ---------------------------
+# altitude = 600000
+# latitude = 0
+# rho, T = simplified_nrlmsise_00(altitude, latitude)
+# print(rho, T)
 
 @jit(nopython=True)
-def atmosphere_model(altitude):
-    if altitude > 1e6:
-        return 0, 0
-    elif altitude <= 0:
+def solar_activity_factor(jd_epoch, jd_solar_min=2454833.0, f107_average=150.0, solar_cycle_months=132):
+    # Calculate the time since the last solar minimum in months
+    days_since_min = jd_epoch - jd_solar_min
+    months_since_min = days_since_min / DAYS_PER_MONTH
+    months_since_cycle_start = (months_since_min % solar_cycle_months) / solar_cycle_months * 2 * PI
+
+    # Estimate the F10.7 value based on a simple sinusoidal model
+    f107 = f107_average + F107_AMPLITUDE * np.sin(months_since_cycle_start)
+    
+    # Calculate the solar activity factor
+    factor = 1 + (f107 - f107_average) / f107_average
+    
+    return factor
+
+# test solar_activity_factor
+# ---------------------------
+# epoch=Time('2024-01-01 00:00:00').jd
+# jd_epoch = epoch + 1 / 86400
+# jd_solar_min = 2454833.0
+# f107_average = 150.0
+# solar_cycle_months = 132
+# factor = solar_activity_factor(jd_epoch, jd_solar_min, f107_average, solar_cycle_months)
+# print(factor)
+
+@jit(nopython=True)
+def atmosphere_model(altitude, latitude, jd_epoch, jd_solar_min=2454833.0, f107_average=150.0, solar_cycle_months=132):
+    if altitude <= 0:
         return 1.225, 288.15
     else:
-        i = np.searchsorted(ALTITUDE_BREAKPOINTS, altitude, side='right') - 1
-        delta_altitude = altitude - ALTITUDE_BREAKPOINTS[i]
-        T = BASE_TEMPERATURES[i] + TEMPERATURE_GRADIENTS[i] * delta_altitude
+        # Calculate the solar activity factor
+        factor = solar_activity_factor(jd_epoch, jd_solar_min, f107_average, solar_cycle_months)
 
-        if TEMPERATURE_GRADIENTS[i] == 0:
-            P = BASE_PRESSURES[i] * np.exp(-EARTH_GRAVITY * EARTH_AIR_MOLAR_MASS * delta_altitude / (EARTH_GAS_CONSTANT * BASE_TEMPERATURES[i]))
-        else:
-            P = BASE_PRESSURES[i] * (T / BASE_TEMPERATURES[i]) ** (-EARTH_GRAVITY * EARTH_AIR_MOLAR_MASS / (EARTH_GAS_CONSTANT * TEMPERATURE_GRADIENTS[i]))
-
-        if i == len(ALTITUDE_BREAKPOINTS) - 1:
-            P *= np.exp(-(altitude - ALTITUDE_BREAKPOINTS[-1]) / SCALE_HEIGHT)
-
-        rho = P / (R_GAS * T)
+        # Calculate the density and temperature
+        rho, T = simplified_nrlmsise_00(altitude, latitude)
+        # make solar factor change with altitude (0 at surface, 1 at 50km and stay 1 above 50km)
+        if altitude < 50000:
+            factor = 1 - altitude / 50000 * np.exp(- factor)
+        elif altitude >= 50000:
+            factor = 1
+            if rho < 1e-20:
+                rho = 1e-20
+        rho *= factor
 
         return rho, T
+    
+# test atmosphere_model
+# ---------------------------
+# altitude = 102010.012
+# latitude = 0
+# epoch=Time('2024-01-01 00:00:00').jd
+# jd_epoch = epoch + 1 / 86400
+# jd_solar_min = 2454833.0
+# f107_average = 150.0
+# solar_cycle_months = 132
+# rho, T = atmosphere_model(altitude, latitude, jd_epoch, jd_solar_min, f107_average, solar_cycle_months)
+# print(rho, T)
 
 @jit(nopython=True)
-def atmospheric_drag(Cd, A, r_ecef, v_ecef, x0=100000, k=0.0001):
-    r_norm = euclidean_norm(r_ecef)
-    v_norm = euclidean_norm(v_ecef)
-    v_unit = np.zeros(3)
-    if v_norm != 0:
-        v_unit = v_ecef / v_norm
+def atmospheric_drag(Cd, A, atmospheric_rho, v):
+    F_d = 0.5 * atmospheric_rho * Cd * A * euclidean_norm(v)**2
+    drag_force_vector = -(F_d / euclidean_norm(v)) * v
+    return drag_force_vector
 
-    altitude = r_norm - EARTH_R
-    rho, _ = atmosphere_model(altitude)
+# test atmospheric_drag
+# ---------------------------
+# Cd = 2.2
+# A = 0.1
+# altitude = 8010.012
+# latitude = 0
+# epoch=Time('2024-01-01 00:00:00').jd
+# jd_epoch = epoch + 1 / 86400
+# atmospheric_rho, _ = atmosphere_model(altitude, latitude, jd_epoch)
+# v = np.array([7500, 0, 0])
+# drag_force_vector = atmospheric_drag(Cd, A, atmospheric_rho, v)
+# print(drag_force_vector)
 
-    # Apply logistic function to altitude
-    smooth_factor = 1 / (1 + np.exp(-k * (altitude - x0)))
-    a_drag_ecef = -0.5 * Cd * A * rho * v_norm ** 2 * v_unit * smooth_factor
-
-    return a_drag_ecef
 
 @jit(nopython=True)
-def thermal_power(altitude, velocity_vec, A=10.5, C_D=1.5):
-    rho, _ = atmosphere_model(altitude)
-    v = euclidean_norm(velocity_vec)
-    Q_dot = 0.5 * C_D * rho * v**3 * A
-    return Q_dot
+def material_conductivity(mat_name, atmo_T, mat_L, mat_rho):
+    """
+    Calculates the thermal conductivity of a given material at a given temperature.
+
+    Parameters:
+    mat_name (int): The index of the material in the MATERIALS list.
+    T (float): The temperature in Kelvin.
+
+    Returns:
+    k (float): The thermal conductivity in W/m/K.
+    """
+    # Calculate sigma for the selected material
+    if mat_name == 'Aluminum':  # Aluminum
+        sigma = 3.77e7 * (1 - 3.4e-3 * (atmo_T - 293))
+    elif mat_name == 'Copper':  # Copper
+        sigma = 5.96e7 * (1 - 3.86e-3 * (atmo_T - 293))
+    elif mat_name == 'PICA':  # PICA
+        sigma = 0.01 * (1 - 0.01 * (atmo_T - 293))
+    elif mat_name == 'RCC':  # RCC
+        sigma = 0.001 * atmo_T + 0.5
+    else:
+        raise ValueError("Invalid material index")
+
+    # Calculate thermal conductivity in W/m/K
+    k = mat_L * sigma * atmo_T / mat_rho
+    return k
+
+# test material_conductivity
+# ---------------------------
+# mat_name = 'Aluminum'
+# atmo_T = 300
+# mat_L = 0.0001
+# mat_rho = 2700
+# k = material_conductivity(mat_name, atmo_T, mat_L, mat_rho)
+# print(k)
+
+
+
+@njit
+def heat_transfer(altitude, v,ablation_efficiency, T_s, atmo_T, thermal_conductivity, capsule_length, emissivity,spacecraft_m, a_drag, specific_heat_capacity):
+    v_norm = euclidean_norm(v)
+    a_drag = euclidean_norm(a_drag)
+
+    drag_force = spacecraft_m * a_drag
+
+    # Calculate work done (W) using the drag force and change in velocity (dv)
+    W = drag_force * v_norm
+
+    # Calculate the heat generated (Q) from the work done (W) and the ablation efficiency factor
+    Q = ablation_efficiency * W
+    Qc = thermal_conductivity * (T_s - atmo_T) / capsule_length
+    Qr = emissivity * STEFAN_BOLTZMANN_CONSTANT * (T_s**4 - atmo_T**4)
+    Q_net = Q - Qc - Qr
+    dT = Q_net / (spacecraft_m * specific_heat_capacity)
+
+    # Update the spacecraft temperature (T_s) by adding the temperature change (dT) to the current temperature
+    T_s += dT
+    return Qc, Qr, Q_net, Q, T_s, dT
+
+# @jit(nopython=True)
+def spacecraft_temperature(altitude, v, atmo_T, a_drag, capsule_length, dt, thermal_conductivity ,specific_heat_capacity, emissivity, ablation_efficiency, iter_fact=2, spacecraft_m=500):
+    # Initialize the spacecraft temperature to the atmospheric temperature
+    T_s = atmo_T
+    dt = int(dt / iter_fact)
+    iterations = dt
+
+    for _ in range(iterations):
+         # Calculate radiative heat transfer (Qr) using the emissivity of the heat shield material and the Stefan-Boltzmann constant (sigma)
+       Qc, Qr, Q_net, Q, T_s, dT = heat_transfer(altitude, v,ablation_efficiency, T_s, atmo_T, thermal_conductivity, capsule_length, emissivity,spacecraft_m, a_drag, specific_heat_capacity)
+
+    return Qc, Qr, Q_net, Q, T_s, dT
+
+# test spacecraft_temperature
+# ---------------------------
+# V = np.array([7500, 0, 0])
+# atmo_rho = 0.0001
+# material = ['Aluminum', 0.0001, 2700, 0.3, 0.3, 0.3, 0.3]
+# atmo_T = 185
+# thickness = 0.1
+# altitude = 100000
+# characteristic_length = 0.3
+# T_surface = spacecraft_temperature(V, atmo_rho, material, atmo_T, thickness, altitude, characteristic_length)
+# print(T_surface)
 
 @jit(nopython=True)
 def moon_position_vector(jd):
@@ -166,6 +326,16 @@ def moon_position_vector(jd):
     z = x_prime * np.sin(MOON_W) * np.sin(MOON_I) + y_prime * np.cos(MOON_W) * np.sin(MOON_I)
 
     return np.array([x, y, z])
+
+# Test moon_position_vector
+# -------------------------
+# jd = 2451545.0
+# moon_pos = moon_position_vector(jd)
+# norm_moon_pos = euclidean_norm(moon_pos)
+# norm_moon_pos_km = norm_moon_pos / 1000
+# print("Moon position vector (m):", moon_pos)
+# print("Moon position vector magnitude (m):", norm_moon_pos)
+# print("Moon position vector magnitude (km):", norm_moon_pos_km)
 
 @jit(nopython=True)
 def sun_position_vector(jd):
@@ -201,6 +371,15 @@ def sun_position_vector(jd):
 
     return np.array([x, y, z])
 
+# Test sun_position_vector
+# -------------------------
+# jd = 2451545.0
+# sun_pos = sun_position_vector(jd)
+# norm_sun_pos = euclidean_norm(sun_pos)
+# norm_sun_pos_km = norm_sun_pos / 1000
+# print("Sun position vector (m):", sun_pos)
+# print("Sun position vector magnitude (m):", norm_sun_pos)
+
 @jit(nopython=True)
 def third_body_acceleration(satellite_position, third_body_position, k_third):
     # Calculate the vector from the satellite to the third body
@@ -210,6 +389,17 @@ def third_body_acceleration(satellite_position, third_body_position, k_third):
         k_third * r_satellite_to_third_body / euclidean_norm(r_satellite_to_third_body) ** 3
         - k_third * third_body_position / euclidean_norm(third_body_position) ** 3
     )
+
+# Test third_body_acceleration
+# ----------------------------
+# jd = 2451545.0
+# satellite_position = np.array([8000000.0, 0.0, 0.0])
+# sun_position = sun_position_vector(jd)
+# k_third = SUN_K
+# a_third = third_body_acceleration(satellite_position, sun_position, k_third)
+# a_third_norm = euclidean_norm(a_third)
+# print("Third body acceleration (m/s^2):", a_third)
+# print("Third body acceleration magnitude (m/s^2):", a_third_norm)
 
 
 @jit(nopython=True)
@@ -228,16 +418,24 @@ def J2_perturbation_numba(r, k, J2, R):
 # ----------------
 
 class SpacecraftModel:
-    def __init__(self, Cd=2.2, Cp=500.0, A=20.0, m=500.0, epoch=Time('2024-01-01 00:00:00'), gmst0=0.0, sim_type='RK45'):
+    def __init__(self, Cd=2.2, A=20.0, m=500.0, epoch=Time('2024-01-01 00:00:00'), gmst0=0.0, sim_type='RK45', material=[233, 1, 1, 0.1], dt=10, iter_fact=2):
         self.Cd = Cd  # drag coefficient
         self.A = A  # cross-sectional area of spacecraft in m^2
+        self.height = np.sqrt(self.A / PI) * 1.315 # height of spacecraft in m, assuming orion capsule design
         self.m = m  # mass of spacecraft in kg
-        self.epoch = epoch # 
+        self.epoch = epoch.jd # 
         self.start_time = time.time() # start time of simulation
         self.A_over_m = (self.A) / self.m # A/m
-        self.Cp = Cp  # Example heat transfer coefficient (W/m²·K)
         self.gmst0 = gmst0 # Greenwich Mean Sidereal Time at epoch (degrees)
+        self.thickness = 0.1 # thickness of spacecraft's heatshield in m
         self.sim_type = sim_type
+        self.mat = material
+        self.thermal_conductivity = material[0]
+        self.specific_heat_capacity = material[1]
+        self.emissivity = material[2]
+        self.ablation_efficiency = material[3]
+        self.dt = dt
+        self.iter_fact = iter_fact
 
     def get_initial_state(self, v, lat, lon, alt, azimuth, gamma, gmst=0.0):
         # Convert geodetic to ECEF
@@ -269,7 +467,7 @@ class SpacecraftModel:
         r_norm = euclidean_norm(r_eci)
 
         # Calculate Greenwich Mean Sidereal Time at every time step
-        epoch = self.epoch + t * u.s
+        epoch = self.epoch + t / 86400.0 # convert seconds to days
         gmst = self.gmst0 + EARTH_OMEGA * t
 
         # Calculate ECEF position and ground velocity
@@ -280,19 +478,22 @@ class SpacecraftModel:
         # Calculate accelerations
         a_grav = -EARTH_MU * r_eci / (r_norm ** 3)
         a_J2 = J2_perturbation_numba(r_eci, k=EARTH_MU, J2=EARTH_J2, R=EARTH_R)
-        moon_r = moon_position_vector(epoch.jd)
-        sun_r = sun_position_vector(epoch.jd)
+        moon_r = moon_position_vector(epoch)
+        sun_r = sun_position_vector(epoch)
         a_moon = third_body_acceleration(r_eci, moon_r, MOON_K)
         a_sun = third_body_acceleration(r_eci, sun_r, SUN_K)
 
+        altitude = r_norm - EARTH_R
+        x_ecef, y_ecef, z_ecef = r_ecef
+        latitude, _, _ = ecef_to_geodetic(x_ecef, y_ecef, z_ecef)
+        rho, T = atmosphere_model(altitude, latitude, epoch)
+
         # Calculate drag acceleration
-        a_drag_ecef = atmospheric_drag(Cd=self.Cd, A=self.A, r_ecef=r_ecef, v_ecef=v_rel)
+        a_drag_ecef = atmospheric_drag(Cd=self.Cd, A=self.A, atmospheric_rho=rho, v=v_rel)
         a_drag = ecef_to_eci(a_drag_ecef, gmst)
 
-        # Calculate heat rate
-        altitude = r_norm - EARTH_R
-        q = thermal_power(altitude=altitude, velocity_vec=v_rel, A=self.A, C_D=self.Cp)
-
+        # Calculate surface temperature
+        q_gen, q_c, q_r, q_net, dT, T_s = spacecraft_temperature(altitude, v_rel, T, a_drag, self.height, self.dt, self.thermal_conductivity ,self.specific_heat_capacity, self.emissivity, self.ablation_efficiency, self.iter_fact, self.m)
         # Calculate total acceleration
         a_total = a_grav + a_J2 + a_moon + a_sun + a_drag
 
@@ -305,7 +506,12 @@ class SpacecraftModel:
             'drag_acceleration': a_drag,
             'altitude': altitude,
             'sun_acceleration': a_sun,
-            'heat_rate': q,
+            'spacecraft_temperature': T_s,
+            'spacecraft_heat_flux': q_net,
+            'spacecraft_heat_flux_conduction': q_c,
+            'spacecraft_heat_flux_radiation': q_r,
+            'spacecraft_heat_flux_total': q_gen,
+            'spacecraft_temperature_change': dT,
         }
 
     
@@ -313,6 +519,7 @@ class SpacecraftModel:
         def rhs(t, y):
             dy = self.equations_of_motion(t, y)
             return np.concatenate((dy['velocity'], dy['acceleration']))
+
         
         def altitude_event(t, y):
             r = y[0:3]
