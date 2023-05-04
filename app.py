@@ -132,7 +132,7 @@ spheroid_mesh = visualization.create_spheroid_mesh() # Add the new trajectory tr
 
 st.set_page_config(
     page_title="Spacecraft Reentry Simulator",
-    page_icon="🚀",
+    page_icon="☄️",
     layout="wide",
     initial_sidebar_state="expanded",
 )
