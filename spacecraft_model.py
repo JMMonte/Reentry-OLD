@@ -63,9 +63,10 @@ SOLAR_CONSTANT = 1361  # W/m^2
 # Atmosphere
 # U.S. Standard Atmosphere altitude breakpoints and temperature gradients (m, K/m)
 ALTITUDE_BREAKPOINTS = np.array([0, 11000, 20000, 32000, 47000, 51000, 71000, 84852])
-TEMPERATURE_GRADIENTS = np.array([-0.0065, 0, 0.001, 0.0028, 0, -0.0028, -0.002])
+TEMPERATURE_GRADIENTS = np.array([-0.0065, 0, 0.001, 0.0028, 0, -0.0028, -0.002, 0])
 BASE_TEMPERATURES = np.array([288.15, 216.65, 216.65, 228.65, 270.65, 270.65, 214.65, 186.95])
 BASE_PRESSURES = np.array([101325, 22632.1, 5474.9, 868.02, 110.91, 66.939, 3.9564, 0.3734])
+BASE_DENSITIES = np.array([1.225, 0.36391, 0.08803, 0.01322, 0.00143, 0.00086, 0.000064, 0.000006])
 # Earth atmosphere constants
 EARTH_AIR_MOLAR_MASS = 0.0289644 # molar mass of Earth's air (kg/mol)
 EARTH_GAS_CONSTANT = 8.31447 # Gas Constant Values based on Energy Units ; J · 8.31447, 3771.38
@@ -174,6 +175,8 @@ def atmosphere_model(altitude, latitude, jd_epoch, jd_solar_min=2454833.0, f107_
             factor = 1
             if rho < 1e-20:
                 rho = 1e-20
+                T = T
+
         rho *= factor
 
         return rho, T
@@ -212,7 +215,7 @@ def atmospheric_drag(Cd, A, atmospheric_rho, v, mass):
 
 
 @njit
-def heat_transfer(altitude, v,ablation_efficiency, T_s, atmo_T, thermal_conductivity, capsule_length, emissivity,spacecraft_m, a_drag, specific_heat_capacity, dt):
+def heat_transfer(v,ablation_efficiency, T_s, atmo_T, thermal_conductivity, capsule_length, emissivity,spacecraft_m, a_drag, specific_heat_capacity, dt):
     v_norm = euclidean_norm(v)
     a_drag = euclidean_norm(a_drag)
 
@@ -231,7 +234,7 @@ def heat_transfer(altitude, v,ablation_efficiency, T_s, atmo_T, thermal_conducti
     return Qc, Qr, Q_net, Q, T_s, dT
 
 # @jit(nopython=True)
-def spacecraft_temperature(altitude, v, atmo_T, a_drag, capsule_length, dt, thermal_conductivity ,specific_heat_capacity, emissivity, ablation_efficiency, iter_fact=2, spacecraft_m=500):
+def spacecraft_temperature(v, atmo_T, a_drag, capsule_length, dt, thermal_conductivity ,specific_heat_capacity, emissivity, ablation_efficiency, iter_fact=2, spacecraft_m=500):
     # Initialize the spacecraft temperature to the atmospheric temperature
     T_s = atmo_T
     dt = int(dt / iter_fact)
@@ -239,7 +242,7 @@ def spacecraft_temperature(altitude, v, atmo_T, a_drag, capsule_length, dt, ther
 
     for _ in range(iterations):
         # Calculate radiative heat transfer (Qr) using the emissivity of the heat shield material and the Stefan-Boltzmann constant (sigma)
-        Qc, Qr, Q_net, Q, T_s, dT = heat_transfer(altitude, v,ablation_efficiency, T_s, atmo_T, thermal_conductivity, capsule_length, emissivity,spacecraft_m, a_drag, specific_heat_capacity, dt)
+        Qc, Qr, Q_net, Q, T_s, dT = heat_transfer(v,ablation_efficiency, T_s, atmo_T, thermal_conductivity, capsule_length, emissivity,spacecraft_m, a_drag, specific_heat_capacity, dt)
         # Update the spacecraft temperature (T_s) by adding the temperature change (dT) to the current temperature
         T_s += dT
 
@@ -450,13 +453,14 @@ class SpacecraftModel:
         x_ecef, y_ecef, z_ecef = r_ecef
         latitude, _, _ = ecef_to_geodetic(x_ecef, y_ecef, z_ecef)
         rho, T = atmosphere_model(altitude, latitude, epoch)
+        print(T)
 
         # Calculate drag acceleration
         a_drag_ecef = atmospheric_drag(Cd=self.Cd, A=self.A, atmospheric_rho=rho, v=v_rel, mass=self.m)
         a_drag = ecef_to_eci(a_drag_ecef, gmst)
 
         # Calculate surface temperature
-        q_gen, q_c, q_r, q_net, T_s, dT = spacecraft_temperature(altitude, v_rel, T, a_drag, self.height, self.dt, self.thermal_conductivity ,self.specific_heat_capacity, self.emissivity, self.ablation_efficiency, self.iter_fact, self.m)
+        q_gen, q_c, q_r, q_net, T_s, dT = spacecraft_temperature(v_rel, T, a_drag, self.height, self.dt, self.thermal_conductivity ,self.specific_heat_capacity, self.emissivity, self.ablation_efficiency, self.iter_fact, self.m)
         # Calculate total acceleration
         a_total = a_grav + a_J2 + a_moon + a_sun + a_drag
 

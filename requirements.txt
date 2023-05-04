@@ -9,3 +9,4 @@ scipy
 streamlit
 geos
 numba
+watchdog
