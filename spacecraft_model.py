@@ -453,7 +453,6 @@ class SpacecraftModel:
         x_ecef, y_ecef, z_ecef = r_ecef
         latitude, _, _ = ecef_to_geodetic(x_ecef, y_ecef, z_ecef)
         rho, T = atmosphere_model(altitude, latitude, epoch)
-        print(T)
 
         # Calculate drag acceleration
         a_drag_ecef = atmospheric_drag(Cd=self.Cd, A=self.A, atmospheric_rho=rho, v=v_rel, mass=self.m)
