@@ -295,7 +295,7 @@ class SpacecraftVisualization:
             v=[y_end - y_start],
             w=[z_end - z_start],
             sizemode='absolute',
-            sizeref=500000,
+            sizeref=200000,
             anchor='tip',
             colorscale=[[0, color], [1, color]],
             showscale=False,

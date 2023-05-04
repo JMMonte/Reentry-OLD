@@ -191,10 +191,11 @@ def atmosphere_model(altitude, latitude, jd_epoch, jd_solar_min=2454833.0, f107_
 # print(rho, T)
 
 @jit(nopython=True)
-def atmospheric_drag(Cd, A, atmospheric_rho, v):
+def atmospheric_drag(Cd, A, atmospheric_rho, v, mass):
     F_d = 0.5 * atmospheric_rho * Cd * A * euclidean_norm(v)**2
     drag_force_vector = -(F_d / euclidean_norm(v)) * v
-    return drag_force_vector
+    drag_accelleration_vector = drag_force_vector / mass
+    return drag_accelleration_vector
 
 # test atmospheric_drag
 # ---------------------------
@@ -210,47 +211,8 @@ def atmospheric_drag(Cd, A, atmospheric_rho, v):
 # print(drag_force_vector)
 
 
-@jit(nopython=True)
-def material_conductivity(mat_name, atmo_T, mat_L, mat_rho):
-    """
-    Calculates the thermal conductivity of a given material at a given temperature.
-
-    Parameters:
-    mat_name (int): The index of the material in the MATERIALS list.
-    T (float): The temperature in Kelvin.
-
-    Returns:
-    k (float): The thermal conductivity in W/m/K.
-    """
-    # Calculate sigma for the selected material
-    if mat_name == 'Aluminum':  # Aluminum
-        sigma = 3.77e7 * (1 - 3.4e-3 * (atmo_T - 293))
-    elif mat_name == 'Copper':  # Copper
-        sigma = 5.96e7 * (1 - 3.86e-3 * (atmo_T - 293))
-    elif mat_name == 'PICA':  # PICA
-        sigma = 0.01 * (1 - 0.01 * (atmo_T - 293))
-    elif mat_name == 'RCC':  # RCC
-        sigma = 0.001 * atmo_T + 0.5
-    else:
-        raise ValueError("Invalid material index")
-
-    # Calculate thermal conductivity in W/m/K
-    k = mat_L * sigma * atmo_T / mat_rho
-    return k
-
-# test material_conductivity
-# ---------------------------
-# mat_name = 'Aluminum'
-# atmo_T = 300
-# mat_L = 0.0001
-# mat_rho = 2700
-# k = material_conductivity(mat_name, atmo_T, mat_L, mat_rho)
-# print(k)
-
-
-
 @njit
-def heat_transfer(altitude, v,ablation_efficiency, T_s, atmo_T, thermal_conductivity, capsule_length, emissivity,spacecraft_m, a_drag, specific_heat_capacity):
+def heat_transfer(altitude, v,ablation_efficiency, T_s, atmo_T, thermal_conductivity, capsule_length, emissivity,spacecraft_m, a_drag, specific_heat_capacity, dt):
     v_norm = euclidean_norm(v)
     a_drag = euclidean_norm(a_drag)
 
@@ -264,10 +226,8 @@ def heat_transfer(altitude, v,ablation_efficiency, T_s, atmo_T, thermal_conducti
     Qc = thermal_conductivity * (T_s - atmo_T) / capsule_length
     Qr = emissivity * STEFAN_BOLTZMANN_CONSTANT * (T_s**4 - atmo_T**4)
     Q_net = Q - Qc - Qr
-    dT = Q_net / (spacecraft_m * specific_heat_capacity)
+    dT = Q_net / (spacecraft_m * specific_heat_capacity) * dt
 
-    # Update the spacecraft temperature (T_s) by adding the temperature change (dT) to the current temperature
-    T_s += dT
     return Qc, Qr, Q_net, Q, T_s, dT
 
 # @jit(nopython=True)
@@ -278,8 +238,10 @@ def spacecraft_temperature(altitude, v, atmo_T, a_drag, capsule_length, dt, ther
     iterations = dt
 
     for _ in range(iterations):
-         # Calculate radiative heat transfer (Qr) using the emissivity of the heat shield material and the Stefan-Boltzmann constant (sigma)
-       Qc, Qr, Q_net, Q, T_s, dT = heat_transfer(altitude, v,ablation_efficiency, T_s, atmo_T, thermal_conductivity, capsule_length, emissivity,spacecraft_m, a_drag, specific_heat_capacity)
+        # Calculate radiative heat transfer (Qr) using the emissivity of the heat shield material and the Stefan-Boltzmann constant (sigma)
+        Qc, Qr, Q_net, Q, T_s, dT = heat_transfer(altitude, v,ablation_efficiency, T_s, atmo_T, thermal_conductivity, capsule_length, emissivity,spacecraft_m, a_drag, specific_heat_capacity, dt)
+        # Update the spacecraft temperature (T_s) by adding the temperature change (dT) to the current temperature
+        T_s += dT
 
     return Qc, Qr, Q_net, Q, T_s, dT
 
@@ -489,11 +451,11 @@ class SpacecraftModel:
         rho, T = atmosphere_model(altitude, latitude, epoch)
 
         # Calculate drag acceleration
-        a_drag_ecef = atmospheric_drag(Cd=self.Cd, A=self.A, atmospheric_rho=rho, v=v_rel)
+        a_drag_ecef = atmospheric_drag(Cd=self.Cd, A=self.A, atmospheric_rho=rho, v=v_rel, mass=self.m)
         a_drag = ecef_to_eci(a_drag_ecef, gmst)
 
         # Calculate surface temperature
-        q_gen, q_c, q_r, q_net, dT, T_s = spacecraft_temperature(altitude, v_rel, T, a_drag, self.height, self.dt, self.thermal_conductivity ,self.specific_heat_capacity, self.emissivity, self.ablation_efficiency, self.iter_fact, self.m)
+        q_gen, q_c, q_r, q_net, T_s, dT = spacecraft_temperature(altitude, v_rel, T, a_drag, self.height, self.dt, self.thermal_conductivity ,self.specific_heat_capacity, self.emissivity, self.ablation_efficiency, self.iter_fact, self.m)
         # Calculate total acceleration
         a_total = a_grav + a_J2 + a_moon + a_sun + a_drag
 
