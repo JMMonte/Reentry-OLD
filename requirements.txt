@@ -10,3 +10,4 @@ streamlit
 geos
 numba
 watchdog
+pvlib

@@ -4,7 +4,6 @@ from poliastro.bodies import Earth
 from coordinate_converter import (ecef_to_eci, geodetic_to_spheroid)
 import astropy.units as u
 from astropy.coordinates import CartesianRepresentation
-from poliastro.twobody import Orbit
 import shapely.geometry as sgeom
 import plotly.express as px
 import pvlib
