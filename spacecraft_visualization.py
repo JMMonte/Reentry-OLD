@@ -7,6 +7,8 @@ from astropy.coordinates import CartesianRepresentation
 from poliastro.twobody import Orbit
 import shapely.geometry as sgeom
 import plotly.express as px
+import pvlib
+import pandas as pd
 
 
 base_radius = 1
@@ -252,13 +254,35 @@ class SpacecraftVisualization:
         return traces
 
     @staticmethod
-    def create_spheroid_mesh(N=50):
+    def create_spheroid_mesh(epoch, N=50):
         '''
         Creates a plotly mesh trace for a spheroid
         :param N: number of points to use for each latitude and longitude line
         :param attractor: attractor object
         :return: plotly mesh trace
         '''
+        latitude, longitude = np.meshgrid(np.linspace(-90, 90, N), np.linspace(-180, 180, N))
+        current_time = epoch.datetime
+
+        # Create a DataFrame with latitude and longitude values
+        lat_long_df = pd.DataFrame({'latitude': latitude.flatten(), 'longitude': longitude.flatten()})
+        lat_long_df.index = pd.DatetimeIndex([current_time] * len(lat_long_df))
+
+        # Calculate the solar position for each pair of latitude and longitude
+        solar_position = lat_long_df.apply(lambda x: pvlib.solarposition.get_solarposition(x.name, x.latitude, x.longitude), axis=1)
+        zenith = np.array([pos.zenith for pos in solar_position]).reshape(latitude.shape)
+
+        # Normalize solar zenith angles
+        normalized_zenith = (zenith - zenith.min()) / (zenith.max() - zenith.min())
+        color_scale = [
+            (0.0, '#00144F'),   # dark blue
+            (0.35, '#03172E'),   # blue
+            (0.48, '#001963'),  # light blue
+            (0.52, '#0048A5'),  # khaki
+            (0.75, '#2F78FF'),  # yellow
+            (1.0, '#659BFF'),  # light yellow
+        ]
+
         lat = np.linspace(-90, 90, N)
         lon = np.linspace(-180, 180, N)
         lat_grid, lon_grid = np.meshgrid(lat, lon)
@@ -267,10 +291,26 @@ class SpacecraftVisualization:
         alt_grid = np.zeros_like(lat_rad_grid)
 
         x, y, z = geodetic_to_spheroid(lat_grid, lon_grid, alt_grid)
+        norm_zenith_flat = normalized_zenith.flatten()
+
+        # Calculate the vertex indices for the mesh triangles
+        num_lon = len(lon)
+        num_lat = len(lat)
+        vertex_indices = []
+        for i in range(num_lat - 1):
+            for j in range(num_lon - 1):
+                vertex_indices.append([i * num_lon + j, i * num_lon + j + 1, (i + 1) * num_lon + j])
+                vertex_indices.append([i * num_lon + j + 1, (i + 1) * num_lon + j + 1, (i + 1) * num_lon + j])
+        vertex_indices = np.array(vertex_indices).T
 
         return go.Mesh3d(
             x=x.flatten(), y=y.flatten(), z=z.flatten(),
-            alphahull=0, color='rgb(0,0,100)', opacity=0.9, hoverinfo='none')
+            i=vertex_indices[0], j=vertex_indices[1], k=vertex_indices[2],
+            intensity=norm_zenith_flat,
+            colorscale=color_scale,
+            colorbar=None,
+            showscale=False,
+            alphahull=0, opacity=1.0, hoverinfo='none')
 
     @staticmethod
     def create_3d_arrow(x_start, y_start, z_start, x_end, y_end, z_end, color, name):

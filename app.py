@@ -142,7 +142,6 @@ layout = go.Layout(
     margin=dict(r=0, l=0, t=0, b=0),
     height=600,
 )
-spheroid_mesh = visualization.create_spheroid_mesh() # Add the new trajectory trace with altitude-based coloring
 
 
 
@@ -293,13 +292,14 @@ if run_simulation:
 if not run_simulation:
     # 3D Earth figure
     with st.spinner("Loading 3D Earth figure..."):
+        spheroid_mesh = visualization.create_spheroid_mesh(epoch) # Add the new trajectory trace with altitude-based coloring
         st.info('''Welcome to the your heatshield's worst nightmare!:s
         👈 To get started, open the sidebar and choose your spacecraft's characteristics and initial conditions. You can see your projected orbit below.:s Then choose the amount of time you want to simulate and press the big red flamy button.''')
         fig2 = go.Figure(layout=layout)
 
         # Add orbit trace
         fig2.add_trace(spheroid_mesh)
-        orbit_trace = visualization.plot_orbit_3d(orbit, color='green', name='Classical orbit', dash='dot')
+        orbit_trace = visualization.plot_orbit_3d(orbit, color='#05FF7A', name='Classical orbit', dash='dot')
         fig2.add_trace(orbit_trace)
 
         # Add position and velocity arrows
@@ -337,7 +337,7 @@ if not run_simulation:
                                     y=[apoapsis_ECI[1]],
                                     z=[apoapsis_ECI[2]],
                                     mode='markers',
-                                    marker=dict(size=5, color='green', symbol='circle'),
+                                    marker=dict(size=5, color='#05FF7A', symbol='circle'),
                                     name='Apoapsis'))
         
 
@@ -359,7 +359,7 @@ if not run_simulation:
                         text=[f"Periapsis<br>Altitude:<br>{periapsis_altitude:.2f} km",
                             f"Apoapsis<br>Altitude:<br>{apoapsis_altitude:.2f} km",
                             f"Start<br>Position<br>Altitude:<br>{alt:.2f} km"],
-                        textfont=dict(color=["red", "green", "yellow"], size=12),
+                        textfont=dict(color=["red", "#05FF7A", "yellow"], size=12),
                         textposition="bottom center",
                         hoverinfo="none",
                         showlegend=False
@@ -524,7 +524,7 @@ st.sidebar.markdown(make_download_link(df, 'simulated_data.csv', 'Download simul
 
 with st.spinner("Generating trajectory 3d plot..."):
     fig3 = go.Figure(layout=layout)
-    orbit_trace = visualization.plot_orbit_3d(orbit, color='green', name='Classical orbit', dash='dot')
+    orbit_trace = visualization.plot_orbit_3d(orbit, color='#05FF7A', name='Classical orbit', dash='dot')
     fig3.add_trace(orbit_trace)
 
     fig3.add_traces(pos_arrow + vel_arrow)
@@ -576,7 +576,7 @@ with st.spinner("Generating trajectory 3d plot..."):
                             showlegend=False))
 
     gmst = gmst0 + EARTH_OMEGA * impact_time
-    spheroid_mesh = visualization.create_spheroid_mesh()
+    spheroid_mesh = visualization.create_spheroid_mesh(epoch)
     fig3.add_trace(spheroid_mesh)
 
     country_traces = visualization.get_geo_traces(country_feature, gmst)
@@ -612,7 +612,6 @@ with st.spinner("Generating trajectory 3d plot..."):
         text=[[f"{value:.3E} K" for value in T_aw_data]],  # Update text values to include units
         hoverinfo='x+y+text',
         colorscale=custom_colorscale,
-        showscale=True,
         colorbar=dict(
             title="Temperature at Stagnation Point [K]",
             titleside="bottom",
