@@ -7,6 +7,7 @@ from copy import deepcopy
 from coordinate_converter import (eci_to_ecef, ecef_to_geodetic, haversine_distance)
 import datetime
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import pandas as pd
 import numpy as np
 from poliastro.twobody import Orbit
@@ -18,8 +19,6 @@ import matplotlib.colors as mcolors
 import matplotlib as mpl
 from numba import jit
 from spacecraft_model import atmosphere_model
-import plotly.subplots as subplots
-from plotly.subplots import make_subplots
 
 #Constants
 #Earth
@@ -1126,37 +1125,53 @@ with st.expander("Click here to learn more about this simulator's atmospheric mo
 altitudes_graph = np.linspace(0, 1000000, num=1000)
 temperatures = []
 densities = []
+solar_factors = []
 temperatures = np.zeros(altitudes_graph.shape)
 densities = np.zeros(altitudes_graph.shape)
+solar_factors = np.zeros(altitudes_graph.shape)
 
 for i, altitude in enumerate(altitudes_graph):
     rho, T = atmosphere_model(altitude, 0 ,epoch.jd)
+    solar_factor = solar_activity_factor(epoch.jd, altitude)
     temperatures[i] = T
     densities[i] = rho
+    solar_factors[i] = solar_factor
 
 # Create a Plotly chart with two x-axes
-fig_atmo = subplots.make_subplots(specs=[[{"secondary_y": True}]])
-fig_atmo.update_layout(xaxis2= {'anchor': 'y', 'overlaying': 'x', 'side': 'top'})
+fig_atmo = make_subplots(rows=1, cols=3, subplot_titles=("Temperature (K)", "Solar Factor", "Density (kg/m³)"))
 
 # Add temperature trace
-fig_atmo.add_trace(go.Scatter(x=temperatures, y=altitudes_graph, name='Temperature (K)', mode='lines', line=dict(color='red')), secondary_y=False)
+fig_atmo.add_trace(go.Scatter(x=temperatures, y=altitudes_graph, name='Temperature (K)', mode='lines', line=dict(color='red')), row=1, col=1)
+
+# Add solar factors trace
+fig_atmo.add_trace(go.Scatter(x=solar_factors, y=altitudes_graph, name='Solar Factor', mode='lines', line=dict(color='yellow')), row=1, col=2)
 
 # Add density trace
-fig_atmo.add_trace(go.Scatter(x=densities, y=altitudes_graph, name='Density (kg/m³)', mode='lines',line=dict(color='green')), secondary_y=False)
-fig_atmo.data[1].update(xaxis='x2')
+fig_atmo.add_trace(go.Scatter(x=densities, y=altitudes_graph, name='Density (kg/m³)', mode='lines', line=dict(color='green')), row=1, col=3)
+
+x_ranges = [(0, max(temperatures)), (min(solar_factors), max(solar_factors)), (min(densities), max(densities))]
+
 for layer in atmosphere_layers:
-        fig_atmo.add_shape(type='rect', x0=0, x1=max(temperatures), y0=layer[0], y1=layer[1], yref='y', xref='x', line=dict(color='rgba(255, 0, 0, 0)', width=0), fillcolor=layer[2], opacity=0.3, name=layer[3])
-        fig_atmo.add_annotation(x=0, y=layer[1], text=layer[3], xanchor='left', yanchor='bottom', font=dict(size=10,), showarrow=False)
+    for col in range(1, 4):
+        x_range = x_ranges[col-1]
+        fig_atmo.add_shape(type='rect', x0=x_range[0], x1=x_range[1], y0=layer[0], y1=layer[1], yref='y', xref=f'x{col}',
+                          line=dict(color='rgba(255, 0, 0, 0)', width=0), fillcolor=layer[2], opacity=0.3, name=layer[3], row=1, col=col)
+        if col == 1:
+            fig_atmo.add_annotation(x=0, y=layer[1], text=layer[3], xanchor='left', yanchor='bottom', font=dict(size=10,), showarrow=False, xref=f'x{col}', yref=f'y{col}')
+
 # Update layout
 fig_atmo.update_layout(
-    title='Atmospheric Temperature and Density vs. Altitude',
-    xaxis_title='Temperature (K)',
-    xaxis2_title='Density (kg/m³)',
+    title='Atmospheric Temperature, Solar Factor, and Density vs. Altitude',
     yaxis_title='Altitude (m)',
     legend_title='Parameters',
     height = 800,
     hovermode="y unified"
 )
+
+# Update x axes titles
+fig_atmo.update_xaxes(title_text="Temperature (K)", row=1, col=1)
+fig_atmo.update_xaxes(title_text="Solar Factor", row=1, col=2)
+fig_atmo.update_xaxes(title_text="Density (kg/m³)", row=1, col=3)
 
 # Run Streamlit app
 st.plotly_chart(fig_atmo, use_container_width=True)
@@ -1190,9 +1205,9 @@ with st.expander("Click here to see how the atmospheric model accounts for solar
 jd_start_sim = epoch.jd
 jd_end_sim = epoch.jd + tf / (24 * 3600)
 solar_dates_past = np.linspace(jd_start_sim - 365 * 20, jd_start_sim, num=int(365.3 * 10))
-solar_data_past = np.array([solar_activity_factor(date) for date in solar_dates_past])
+solar_data_past = np.array([solar_activity_factor(date, altitude) for date in solar_dates_past])
 solar_dates_sim = np.linspace(jd_start_sim, jd_end_sim, num=int(tf))
-solar_data_sim = np.array([solar_activity_factor(date) for date in solar_dates_sim])
+solar_data_sim = np.array([solar_activity_factor(date, altitude) for date in solar_dates_sim])
 
 # Convert solar dates to datetime
 solar_dates_past = [Time(date, format='jd').datetime for date in solar_dates_past]

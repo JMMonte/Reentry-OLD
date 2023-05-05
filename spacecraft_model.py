@@ -101,7 +101,8 @@ def euclidean_norm(vec):
     return np.sqrt(vec[0] ** 2 + vec[1] ** 2 + vec[2] ** 2)
 
 @jit(nopython=True)
-def simplified_nrlmsise_00(altitude, latitude, solar_activity_factor):
+def simplified_nrlmsise_00(altitude, latitude, jd_epoch):
+    factor = solar_activity_factor(jd_epoch, altitude)
     
     # Latitude factor (simplified)
     latitude_factor = 1 + 0.01 * np.abs(latitude) / 90.0
@@ -123,8 +124,9 @@ def simplified_nrlmsise_00(altitude, latitude, solar_activity_factor):
     P *= latitude_factor
 
     rho = P / (R_GAS * T)
+    # make solar activity factor decrease exponentially bellow 20km
 
-    rho *= solar_activity_factor
+    rho *= factor
 
     return rho, T
 
@@ -136,7 +138,7 @@ def simplified_nrlmsise_00(altitude, latitude, solar_activity_factor):
 # print(rho, T)
 
 @jit(nopython=True)
-def solar_activity_factor(jd_epoch, jd_solar_min=2454833.0, f107_average=150.0, solar_cycle_months=132):
+def solar_activity_factor(jd_epoch, altitude, jd_solar_min=2454833.0, f107_average=150.0, solar_cycle_months=132):
     # Calculate the time since the last solar minimum in months
     days_since_min = jd_epoch - jd_solar_min
     months_since_min = days_since_min / DAYS_PER_MONTH
@@ -147,6 +149,10 @@ def solar_activity_factor(jd_epoch, jd_solar_min=2454833.0, f107_average=150.0, 
     
     # Calculate the solar activity factor
     factor = 1 + (f107 - f107_average) / f107_average
+
+    # make solar activity factor decrease exponentially bellow 20km
+    if altitude < 40000:
+        factor = factor / factor**((40000-altitude)/40000)
     
     return factor
 
@@ -160,29 +166,27 @@ def solar_activity_factor(jd_epoch, jd_solar_min=2454833.0, f107_average=150.0, 
 # factor = solar_activity_factor(jd_epoch, jd_solar_min, f107_average, solar_cycle_months)
 # print(factor)
 
-@jit(nopython=True)
-def atmosphere_model(altitude, latitude, jd_epoch, jd_solar_min=2454833.0, f107_average=150.0, solar_cycle_months=132):
+#@jit(nopython=True)
+def atmosphere_model(altitude, latitude, jd_epoch):
     if altitude <= 0:
         return 1.225, 288.15
     else:
-        # Calculate the solar activity factor
-        factor = solar_activity_factor(jd_epoch, jd_solar_min, f107_average, solar_cycle_months)
         # Calculate the density and temperature using the simplified NRLMSISE-00 model
-        rho, T = simplified_nrlmsise_00(altitude, latitude, factor)
+        rho, T = simplified_nrlmsise_00(altitude, latitude, jd_epoch)
 
         return rho, T
     
 # test atmosphere_model
 # ---------------------------
-altitude = 102010.012
-latitude = 0
-epoch=Time('2024-01-01 00:00:00').jd
-jd_epoch = epoch + 1 / 86400
-jd_solar_min = 2454833.0
-f107_average = 150.0
-solar_cycle_months = 132
-rho, T = atmosphere_model(altitude, latitude, jd_epoch, jd_solar_min, f107_average, solar_cycle_months)
-print(rho, T)
+# altitude = 102010.012
+# latitude = 0
+# epoch=Time('2024-01-01 00:00:00').jd
+# jd_epoch = epoch + 1 / 86400
+# jd_solar_min = 2454833.0
+# f107_average = 150.0
+# solar_cycle_months = 132
+# rho, T, solar_factor = atmosphere_model(altitude, latitude, jd_epoch, jd_solar_min, f107_average, solar_cycle_months)
+# print(rho, T)
 
 @jit(nopython=True)
 def atmospheric_drag(Cd, A, atmospheric_rho, v, mass):
