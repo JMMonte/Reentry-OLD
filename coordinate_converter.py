@@ -1,7 +1,8 @@
 import math
 import numpy as np
 from astropy import units as u
-from numba import jit
+from numba import jit, njit
+from numba import types
 
 #constants
 # Operations
@@ -25,30 +26,47 @@ EARTH_ROTATION_RATE_DEG_PER_SEC = 360.0 / EARTH_ROT_S  # Earth rotation rate in 
 
 # conversions ---------------------------------------------------------------
 
+@jit(types.float64[:](types.float64[:], types.float64), nopython=True)
 def eci_to_ecef(vector_eci, gmst):
     # Calculate the rotation matrix
     cos_gmst = np.cos(gmst)
     sin_gmst = np.sin(gmst)
-    rotation_matrix = np.array([[cos_gmst, sin_gmst, 0],
-                                [-sin_gmst, cos_gmst, 0],
-                                [0, 0, 1]])
+    
+    rotation_matrix = np.empty((3, 3), dtype=np.float64)
+    rotation_matrix[0, 0] = cos_gmst
+    rotation_matrix[0, 1] = sin_gmst
+    rotation_matrix[0, 2] = 0
+    rotation_matrix[1, 0] = -sin_gmst
+    rotation_matrix[1, 1] = cos_gmst
+    rotation_matrix[1, 2] = 0
+    rotation_matrix[2, 0] = 0
+    rotation_matrix[2, 1] = 0
+    rotation_matrix[2, 2] = 1
 
     # Convert the ECI vector to ECEF
     vector_ecef = rotation_matrix @ vector_eci
     return vector_ecef
 
-@jit
+@jit(nopython=True)
 def ecef_to_eci(vector_ecef, gmst):
     # Calculate the rotation matrix (transpose of the ECI to ECEF rotation matrix)
     cos_gmst = np.cos(gmst)
     sin_gmst = np.sin(gmst)
-    rotation_matrix = np.array([[cos_gmst, -sin_gmst, 0],
-                                [sin_gmst, cos_gmst, 0],
-                                [0, 0, 1]])
+    rotation_matrix = np.empty((3, 3), dtype=np.float64)
+    rotation_matrix[0, 0] = cos_gmst
+    rotation_matrix[0, 1] = -sin_gmst
+    rotation_matrix[0, 2] = 0
+    rotation_matrix[1, 0] = sin_gmst
+    rotation_matrix[1, 1] = cos_gmst
+    rotation_matrix[1, 2] = 0
+    rotation_matrix[2, 0] = 0
+    rotation_matrix[2, 1] = 0
+    rotation_matrix[2, 2] = 1
 
     # Convert the ECEF vector to ECI
-    vector_eci = rotation_matrix @ vector_ecef
+    vector_eci = np.dot(rotation_matrix, vector_ecef)
     return vector_eci
+
 
 @jit(nopython=True)
 def geodetic_to_spheroid(lat, lon, alt):

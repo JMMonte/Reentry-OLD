@@ -1,12 +1,11 @@
 # Spacecraft Reentry Simulation
 
-![Screenshot](/assets/Frame%20169.png)
-![Screenshot](/assets/Screenshot%202023-04-26%20at%2014.34.10.png)
+![Screenshot](/assets/Screenshot%202023-05-05%20at%2013.34.09.png)
 
-| | |
-|:-------------------------:|:-------------------------:|
-![Screenshot](/assets/Screenshot%202023-04-26%20at%2016.39.40.png) | ![Screenshot](+/../assets/newplot%20(1).png)
-![Screenshot](/assets/newplot%20(2).png)  |  ![Screenshot](/assets/Screenshot%202023-04-26%20at%2019.28.15.png)
+![Screenshot](/assets/reentry_trail.png)
+
+![Screenshot](/assets/reentry_path_altitude.png)
+![Screenshot](/assets/earth_viewgif.gif)
 
 This is a Python-based web application that simulates the complex dynamics of a spacecraft orbiting around the Earth. It takes into account the Earth's rotation, J2 perturbations, atmospheric drag, and the Sun and Moon's gravity while predicting the spacecraft's trajectory.
 
@@ -42,7 +41,23 @@ The simulation uses the amazing [poliastro](https://docs.poliastro.space/en/stab
 2. Run the application with `streamlit run app.py`.
 3. Open the provided URL in a web browser to access the application.
 
-## Electron App
+## Secondary usage
+
+1. Plot orbital decay of a satellite.
+2. Plot the ground track of a satellite.
+3. Plot the orbital elements of a satellite.
+4. Plot orbital perturbations to high altitude satellites.
+
+![Screenshot](/assets/sun_synch.png)
+![Screenshot](/assets/moon_perturbations.jpeg)
+![Screenshot](/assets/moon_perturbations_1.jpeg)
+
+## Test temperature and atmospheric model
+
+1. Run the 'temperature_model.py' file to generate a new temperature model.
+2. You should see this dashboard in your browser:
+
+![Screenshot](/assets/dashboard.png)
 
 ### Server mode
 

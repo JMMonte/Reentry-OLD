@@ -137,6 +137,46 @@ def simplified_nrlmsise_00(altitude, latitude, jd_epoch):
 # rho, T = simplified_nrlmsise_00(altitude, latitude)
 # print(rho, T)
 
+from scipy.optimize import curve_fit
+
+@jit(nopython=True)
+# normalized sigmoid function (y1 = 0, y2 = 1)
+def normalized_sigmoid(x, k, x0):
+    return 1 / (1 + np.exp(-k * (x - x0)))
+
+# find k and x0 for normalized sigmoids
+def fit_normalized_sigmoid(x1, y1, x2, y2):
+    x_data = np.array([x1, x2])
+    y_data = np.array([(y1 - y1) / (y2 - y1), (y2 - y1) / (y2 - y1)])
+    params, _ = curve_fit(normalized_sigmoid, x_data, y_data, p0=[0.0001, x1 + (x2 - x1) / 2], maxfev=10000)
+
+    k, x0 = params
+    return k, x0
+
+@jit(nopython=True)
+def sigmoid(x, y1, y2, k, x0, smoothness=0.0010):
+    normalized_output = normalized_sigmoid(x, k * smoothness, x0)
+    return y1 + (y2 - y1) * normalized_output
+
+# discover k and x0 for normalized sigmoid with x1 = 0, y1 = 0, x2 = 40000, y2 = 150
+# Points (x1, y1) and (x2, y2)
+x1, y1 = 0, 100
+x2 = 40000
+y2 = 150  # This can be any value you want
+
+k, x0 = fit_normalized_sigmoid(x1, y1, x2, y2)
+print(f"Best-fit values: k = {k}, x0 = {x0}")
+
+k = 0.036032536225379
+x0 = 19709.47069118867
+
+# Example usage with variable y2
+y2_new = 180
+altitude = 40000
+factor = sigmoid(altitude, y1, y2_new, k, x0)
+print(f"Factor at altitude {altitude} with y2 = {y2_new}: {factor}")
+
+
 @jit(nopython=True)
 def solar_activity_factor(jd_epoch, altitude, jd_solar_min=2454833.0, f107_average=150.0, solar_cycle_months=132):
     # Calculate the time since the last solar minimum in months
@@ -151,8 +191,11 @@ def solar_activity_factor(jd_epoch, altitude, jd_solar_min=2454833.0, f107_avera
     factor = 1 + (f107 - f107_average) / f107_average
 
     # make solar activity factor decrease exponentially bellow 20km
-    if altitude < 40000:
-        factor = factor / factor**((40000-altitude)/40000)
+    if altitude < 90000:
+        # use sigmoid curve here to make the factor decrease exponentially between 0 and 40000m
+        k = 0.036032536225379 # from fit_normalized_sigmoid
+        x0 = 19709.47069118867
+        factor = sigmoid(altitude, 1, factor, k, x0)
     
     return factor
 

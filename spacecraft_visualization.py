@@ -1,6 +1,6 @@
 import plotly.graph_objects as go
 import numpy as np
-from poliastro.bodies import Earth
+from numba import jit, njit
 from coordinate_converter import (ecef_to_eci, geodetic_to_spheroid)
 import astropy.units as u
 from astropy.coordinates import CartesianRepresentation
@@ -26,7 +26,6 @@ heatshield_colorscale = [
     [0.5, "red"],
     [1, "black"]
 ]
-
 def create_cone_mesh(height_ratio, top_radius_ratio, truncation_ratio, num_points=100):
     u = np.linspace(1 - truncation_ratio, 1, num_points)
     v = np.linspace(0, 2 * np.pi, num_points)
@@ -54,6 +53,7 @@ def create_half_sphere_mesh(radius, height_offset, num_points=100):
     
     return x, y, z
 
+
 def create_circular_cap(radius, height, num_points=100):
     u = np.linspace(0, radius, num_points)
     v = np.linspace(0, 2 * np.pi, num_points)
@@ -66,6 +66,7 @@ def create_circular_cap(radius, height, num_points=100):
 
     return x, y, z
 
+@jit(nopython=True)
 def rotate_around_y(x, y, z, angle_degrees):
     angle_rad = np.radians(angle_degrees)
     cos_angle = np.cos(angle_rad)
@@ -76,6 +77,16 @@ def rotate_around_y(x, y, z, angle_degrees):
     
     return x_rot, y, z_rot
 
+@njit
+def compute_vertex_indices(num_lat, num_lon):
+    vertex_indices = []
+    for i in range(num_lat - 1):
+        for j in range(num_lon - 1):
+            vertex_indices.append([i * num_lon + j, i * num_lon + j + 1, (i + 1) * num_lon + j])
+            vertex_indices.append([i * num_lon + j + 1, (i + 1) * num_lon + j + 1, (i + 1) * num_lon + j])
+    return np.array(vertex_indices).T
+
+@jit(nopython=True)
 def generate_turbulent_lines(base_radius, num_lines=40, num_points=150, randomness=0.2, max_length=2):
     lines = []
     
@@ -114,6 +125,7 @@ def create_3d_line(x, y, z, colorscale='Plasma', showlegend=False):
         marker=dict(color=colors, colorscale=colorscale, showscale=False)
     )
     return line
+
 
 def create_capsule ():
     cap_radius = base_radius * (1 - truncation_ratio) * top_radius_ratio * 2
@@ -173,7 +185,7 @@ class SpacecraftVisualization:
     @staticmethod
     def create_geo_trace(geometry, gmst):
         '''
-        Creates a plotly trace for a geometry object
+        Creates a plotly trace for a geometry object in geodetic coordinates
         :param geometry: geometry object
         :param gmst: Greenwich Mean Sidereal Time in degrees
         :return: plotly trace
@@ -260,27 +272,29 @@ class SpacecraftVisualization:
         :param attractor: attractor object
         :return: plotly mesh trace
         '''
+        EARTH_COLOR_SCALE = [
+            (0.0, '#00144F'), # Dark blue   
+            (0.35, '#03172E'),   
+            (0.48, '#001963'),  
+            (0.52, '#0048A5'),  
+            (0.75, '#2F78FF'),
+            (1.0, '#659BFF'), # Light blue
+        ]
         latitude, longitude = np.meshgrid(np.linspace(-90, 90, N), np.linspace(-180, 180, N))
         current_time = epoch.datetime
 
-        # Create a DataFrame with latitude and longitude values
-        lat_long_df = pd.DataFrame({'latitude': latitude.flatten(), 'longitude': longitude.flatten()})
-        lat_long_df.index = pd.DatetimeIndex([current_time] * len(lat_long_df))
+        # Create a numpy array with latitude and longitude values
+        lat_long_arr = np.column_stack((latitude.flatten(), longitude.flatten()))
 
         # Calculate the solar position for each pair of latitude and longitude
-        solar_position = lat_long_df.apply(lambda x: pvlib.solarposition.get_solarposition(x.name, x.latitude, x.longitude), axis=1)
-        zenith = np.array([pos.zenith for pos in solar_position]).reshape(latitude.shape)
+        solar_position = []
+        for lat, lon in lat_long_arr:
+            solar_position.append(pvlib.solarposition.get_solarposition(current_time, lat, lon))
+        zenith_values = [pos.zenith for pos in solar_position]
+        zenith = np.array(zenith_values).reshape(latitude.shape)
 
         # Normalize solar zenith angles
         normalized_zenith = (zenith - zenith.min()) / (zenith.max() - zenith.min())
-        color_scale = [
-            (0.0, '#00144F'),   # dark blue
-            (0.35, '#03172E'),   # blue
-            (0.48, '#001963'),  # light blue
-            (0.52, '#0048A5'),  # khaki
-            (0.75, '#2F78FF'),  # yellow
-            (1.0, '#659BFF'),  # light yellow
-        ]
 
         lat = np.linspace(-90, 90, N)
         lon = np.linspace(-180, 180, N)
@@ -295,18 +309,14 @@ class SpacecraftVisualization:
         # Calculate the vertex indices for the mesh triangles
         num_lon = len(lon)
         num_lat = len(lat)
-        vertex_indices = []
-        for i in range(num_lat - 1):
-            for j in range(num_lon - 1):
-                vertex_indices.append([i * num_lon + j, i * num_lon + j + 1, (i + 1) * num_lon + j])
-                vertex_indices.append([i * num_lon + j + 1, (i + 1) * num_lon + j + 1, (i + 1) * num_lon + j])
-        vertex_indices = np.array(vertex_indices).T
+        
+        vertex_indices = compute_vertex_indices(num_lat, num_lon)
 
         return go.Mesh3d(
             x=x.flatten(), y=y.flatten(), z=z.flatten(),
             i=vertex_indices[0], j=vertex_indices[1], k=vertex_indices[2],
             intensity=norm_zenith_flat,
-            colorscale=color_scale,
+            colorscale=EARTH_COLOR_SCALE,
             colorbar=None,
             showscale=False,
             alphahull=0, opacity=1.0, hoverinfo='none')

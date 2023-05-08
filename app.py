@@ -117,8 +117,8 @@ def periapsis_apoapsis_points(orbit: Orbit):
     nu_apoapsis = np.pi
 
     # Calculate the position and velocity vectors for periapsis and apoapsis in ECI frame
-    r_periapsis_ECI, v_periapsis_ECI = coe2rv(k, orbit.p.to_value('km'), orbit.ecc.value, orbit.inc.to_value('rad'), orbit.raan.to_value('rad'), orbit.argp.to_value('rad'), nu_periapsis)
-    r_apoapsis_ECI, v_apoapsis_ECI = coe2rv(k, orbit.p.to_value('km'), orbit.ecc.value, orbit.inc.to_value('rad'), orbit.raan.to_value('rad'), orbit.argp.to_value('rad'), nu_apoapsis)
+    r_periapsis_ECI, _ = coe2rv(k, orbit.p.to_value('km'), orbit.ecc.value, orbit.inc.to_value('rad'), orbit.raan.to_value('rad'), orbit.argp.to_value('rad'), nu_periapsis)
+    r_apoapsis_ECI, _ = coe2rv(k, orbit.p.to_value('km'), orbit.ecc.value, orbit.inc.to_value('rad'), orbit.raan.to_value('rad'), orbit.argp.to_value('rad'), nu_apoapsis)
 
     # Convert the position vectors from km to m
     r_periapsis_ECI = r_periapsis_ECI * 1000
@@ -133,6 +133,7 @@ data_directory = "data"
 coastline_feature = cfeature.COASTLINE
 country_feature = cfeature.BORDERS
 
+# General layout for the plots
 layout = go.Layout(
     scene=dict(
         xaxis=dict(visible=False),
@@ -143,9 +144,7 @@ layout = go.Layout(
     height=600,
 )
 
-
-
-
+# Setup the page
 st.set_page_config(
     page_title="Spacecraft Reentry Simulator",
     page_icon="☄️",
@@ -265,36 +264,37 @@ if run_simulation:
     #add a data filter to limit the number of points displayed to a maximum of 150000
     #--------------------------------------------
     # Filter the data to a maximum of 150000 points
-    
-    if len(sol.t) > max_points:
-        np.random.seed(0)
-        indices = np.random.choice(len(sol.t), size=abs(len(sol.t) - max_points), replace=False)
-        sol.t = np.delete(sol.t, indices)
-        sol.y = np.delete(sol.y, indices, axis=1)
-        if sol.additional_data:
-            for key, value in sol.additional_data.items():
-                if value.ndim == 1:
-                    if np.max(indices) < value.shape[0]:
-                        sol.additional_data[key] = np.delete(value, indices)
-                    else:
-                        print(f"Index {np.max(indices)} is out of bounds for axis 0 with size {value.shape[0]} for key {key}")
-                elif value.ndim == 2:
-                    if np.max(indices) < value.shape[1]:
-                        sol.additional_data[key] = np.delete(value, indices, axis=1)
-                    else:
-                        print(f"Index {np.max(indices)} is out of bounds for axis 1 with size {value.shape[1]} for key {key}")
-                else:
-                    print(f"Value array for key {key} has an unexpected dimension")
-        #--------------------------------------------
     progress_bar.empty()
     image.empty()
+    with st.spinner("Filtering data..."):
+        if len(sol.t) > max_points:
+            np.random.seed(0)
+            indices = np.random.choice(len(sol.t), size=abs(len(sol.t) - max_points), replace=False)
+            sol.t = np.delete(sol.t, indices)
+            sol.y = np.delete(sol.y, indices, axis=1)
+            if sol.additional_data:
+                for key, value in sol.additional_data.items():
+                    if value.ndim == 1:
+                        if np.max(indices) < value.shape[0]:
+                            sol.additional_data[key] = np.delete(value, indices)
+                        else:
+                            print(f"Index {np.max(indices)} is out of bounds for axis 0 with size {value.shape[0]} for key {key}")
+                    elif value.ndim == 2:
+                        if np.max(indices) < value.shape[1]:
+                            sol.additional_data[key] = np.delete(value, indices, axis=1)
+                        else:
+                            print(f"Index {np.max(indices)} is out of bounds for axis 1 with size {value.shape[1]} for key {key}")
+                    else:
+                        print(f"Value array for key {key} has an unexpected dimension")
+            #--------------------------------------------
+
 
 if not run_simulation:
     # 3D Earth figure
     with st.spinner("Loading 3D Earth figure..."):
         spheroid_mesh = visualization.create_spheroid_mesh(epoch) # Add the new trajectory trace with altitude-based coloring
         st.info('''Welcome to the your heatshield's worst nightmare!:s
-        👈 To get started, open the sidebar and choose your spacecraft's characteristics and initial conditions. You can see your projected orbit below.:s Then choose the amount of time you want to simulate and press the big red flamy button.''')
+        👈 To get started, open the sidebar and choose your spacecraft's characteristics and initial conditions''')
         fig2 = go.Figure(layout=layout)
 
         # Add orbit trace
@@ -346,7 +346,7 @@ if not run_simulation:
                                     y=[y_pos],
                                     z=[z_pos],
                                     mode='markers',
-                                    marker=dict(size=5, color='yellow', symbol='circle'),
+                                    marker=dict(size=5, color='#fcba03', symbol='circle'),
                                     name='Start'))
         
         
@@ -359,7 +359,7 @@ if not run_simulation:
                         text=[f"Periapsis<br>Altitude:<br>{periapsis_altitude:.2f} km",
                             f"Apoapsis<br>Altitude:<br>{apoapsis_altitude:.2f} km",
                             f"Start<br>Position<br>Altitude:<br>{alt:.2f} km"],
-                        textfont=dict(color=["red", "#05FF7A", "yellow"], size=12),
+                        textfont=dict(color=["red", "#05FF7A", "#fcba03"], size=12),
                         textposition="bottom center",
                         hoverinfo="none",
                         showlegend=False
@@ -377,144 +377,144 @@ if not run_simulation:
 
 
 
+with st.spinner("Loading simulation data..."):
+    #--------------------------------------------
+    # unpack the solution
+    t_sol = sol.t # Extract the time array
+    r_eci = sol.y[0:3] # Extract the ECI coordinates
+    v_eci = sol.y[3:6] # Extract the ECI velocity components
+    additional_data = sol.additional_data # Compute additional parameters
 
-#--------------------------------------------
-# unpack the solution
-t_sol = sol.t # Extract the time array
-r_eci = sol.y[0:3] # Extract the ECI coordinates
-v_eci = sol.y[3:6] # Extract the ECI velocity components
-additional_data = sol.additional_data # Compute additional parameters
+    # Calculate GMST for each time step
+    gmst_vals = gmst0 + EARTH_OMEGA * t_sol
 
-# Calculate GMST for each time step
-gmst_vals = gmst0 + EARTH_OMEGA * t_sol
+    # Convert ECI to ECEF and then to geodetic coordinates
+    r_ecef_vals = []
+    v_ecef_vals = []
+    geodetic_coords = []
 
-# Convert ECI to ECEF and then to geodetic coordinates
-r_ecef_vals = []
-v_ecef_vals = []
-geodetic_coords = []
+    for r, v, gmst in zip(r_eci.T, v_eci.T, gmst_vals):
+        r_ecef = eci_to_ecef(r, gmst)
+        v_ecef = eci_to_ecef(v, gmst)
+        lat, lon, alt = ecef_to_geodetic(r_ecef[0], r_ecef[1], r_ecef[2])
 
-for r, v, gmst in zip(r_eci.T, v_eci.T, gmst_vals):
-    r_ecef = eci_to_ecef(r, gmst)
-    v_ecef = eci_to_ecef(v, gmst)
-    lat, lon, alt = ecef_to_geodetic(r_ecef[0], r_ecef[1], r_ecef[2])
+        r_ecef_vals.append(r_ecef)
+        v_ecef_vals.append(v_ecef)
+        geodetic_coords.append([lat, lon, alt])
 
-    r_ecef_vals.append(r_ecef)
-    v_ecef_vals.append(v_ecef)
-    geodetic_coords.append([lat, lon, alt])
-
-r_ecef_vals = np.array(r_ecef_vals)
-v_ecef_vals = np.array(v_ecef_vals)
-geodetic_coords = np.array(geodetic_coords)
-
-
-# Unpack additional data
-velocity = additional_data['velocity']
-total_acceleration = additional_data['acceleration']
-earth_grav_acceleration = additional_data['gravitational_acceleration']
-j2_acceleration = additional_data['J2_acceleration']
-moon_acceleration = additional_data['moon_acceleration']
-drag_acceleration = additional_data['drag_acceleration']
-altitude = additional_data['altitude']
-sun_acceleration = additional_data['sun_acceleration']
-T_aw_data = additional_data['spacecraft_temperature']
-q_net_data = additional_data['spacecraft_heat_flux']
-q_c_data = additional_data['spacecraft_heat_flux_conduction']
-q_r_data = additional_data['spacecraft_heat_flux_radiation']
-q_gen_data = additional_data['spacecraft_heat_flux_total']
-dT_data = additional_data['spacecraft_temperature_change']
+    r_ecef_vals = np.array(r_ecef_vals)
+    v_ecef_vals = np.array(v_ecef_vals)
+    geodetic_coords = np.array(geodetic_coords)
 
 
-# normalize each acceleration vector
-velocity_norm = np.linalg.norm(velocity, axis=1)
-total_acceleration_norm = np.linalg.norm(total_acceleration, axis=1)
-earth_grav_acceleration_norm = np.linalg.norm(earth_grav_acceleration, axis=1)
-j2_acceleration_norm = np.linalg.norm(j2_acceleration, axis=1)
-moon_acceleration_norm = np.linalg.norm(moon_acceleration, axis=1)
-drag_acceleration_norm = np.linalg.norm(drag_acceleration, axis=1)
-sun_acceleration_norm = np.linalg.norm(sun_acceleration, axis=1)
-
-# convert to g's
-gs_acceleration = total_acceleration_norm / 9.80665 # convert to g's
-
-# compute downrange distance
-downrange_distances = [0]
-
-for i in range(1, len(geodetic_coords)):
-    lat1, lon1, _ = geodetic_coords[i - 1]
-    lat2, lon2, _ = geodetic_coords[i]
-    distance = haversine_distance(lat1, lon1, lat2, lon2)
-    downrange_distances.append(downrange_distances[-1] + distance)
-crossing_points_downrange, crossing_points = visualization.find_crossing_points(t_sol, downrange_distances, altitude, threshold=100000)
-
-closest_indices = np.abs(np.subtract.outer(t_sol, crossing_points)).argmin(axis=0)
-crossing_points_r_v = sol.y[:, closest_indices]
-crossing_points_r = crossing_points_r_v[:3]
-
-# Get touchdown array
-altitude_event_times = sol.t_events[0]
-
-# flatten the array
-touchdown_time = np.int16(t_sol[-1])
+    # Unpack additional data
+    velocity = additional_data['velocity']
+    total_acceleration = additional_data['acceleration']
+    earth_grav_acceleration = additional_data['gravitational_acceleration']
+    j2_acceleration = additional_data['J2_acceleration']
+    moon_acceleration = additional_data['moon_acceleration']
+    drag_acceleration = additional_data['drag_acceleration']
+    altitude = additional_data['altitude']
+    sun_acceleration = additional_data['sun_acceleration']
+    T_aw_data = additional_data['spacecraft_temperature']
+    q_net_data = additional_data['spacecraft_heat_flux']
+    q_c_data = additional_data['spacecraft_heat_flux_conduction']
+    q_r_data = additional_data['spacecraft_heat_flux_radiation']
+    q_gen_data = additional_data['spacecraft_heat_flux_total']
+    dT_data = additional_data['spacecraft_temperature_change']
 
 
-# Upload/download simulation data
-#--------------------------------------------
-def match_array_length(array, target_length):
-    if len(array) > target_length:
-        return array[:target_length]
-    elif len(array) < target_length:
-        return np.pad(array, (0, target_length - len(array)), mode='constant')
-    else:
-        return array
-    
-arrays_to_match = [
-    velocity_norm, altitude, drag_acceleration_norm, T_aw_data,
-    r_eci[0], r_eci[1], r_eci[2], sol.y[3], sol.y[4], sol.y[5]
-] + [
-    [vec[i] for i in range(len(vec))]
-    for vec in [velocity, total_acceleration, earth_grav_acceleration,
-                j2_acceleration, moon_acceleration, drag_acceleration]
-    for dim in range(3)
-]
+    # normalize each acceleration vector
+    velocity_norm = np.linalg.norm(velocity, axis=1)
+    total_acceleration_norm = np.linalg.norm(total_acceleration, axis=1)
+    earth_grav_acceleration_norm = np.linalg.norm(earth_grav_acceleration, axis=1)
+    j2_acceleration_norm = np.linalg.norm(j2_acceleration, axis=1)
+    moon_acceleration_norm = np.linalg.norm(moon_acceleration, axis=1)
+    drag_acceleration_norm = np.linalg.norm(drag_acceleration, axis=1)
+    sun_acceleration_norm = np.linalg.norm(sun_acceleration, axis=1)
 
-matched_arrays = [match_array_length(arr, len(sol.t)) for arr in arrays_to_match]
+    # convert to g's
+    gs_acceleration = total_acceleration_norm / 9.80665 # convert to g's
+
+    # compute downrange distance
+    downrange_distances = [0]
+
+    for i in range(1, len(geodetic_coords)):
+        lat1, lon1, _ = geodetic_coords[i - 1]
+        lat2, lon2, _ = geodetic_coords[i]
+        distance = haversine_distance(lat1, lon1, lat2, lon2)
+        downrange_distances.append(downrange_distances[-1] + distance)
+    crossing_points_downrange, crossing_points = visualization.find_crossing_points(t_sol, downrange_distances, altitude, threshold=100000)
+
+    closest_indices = np.abs(np.subtract.outer(t_sol, crossing_points)).argmin(axis=0)
+    crossing_points_r_v = sol.y[:, closest_indices]
+    crossing_points_r = crossing_points_r_v[:3]
+
+    # Get touchdown array
+    altitude_event_times = sol.t_events[0]
+
+    # flatten the array
+    touchdown_time = np.int16(t_sol[-1])
 
 
-data = {
-    't': t_sol,
-    'velocity': matched_arrays[0],
-    'altitude': matched_arrays[1],
-    'drag_acceleration': matched_arrays[2],
-    'spacecraft_temperature': matched_arrays[3],
-    'x': matched_arrays[4],
-    'y': matched_arrays[5],
-    'z': matched_arrays[6],
-    'vx': matched_arrays[7],
-    'vy': matched_arrays[8],
-    'vz': matched_arrays[9],
-    'velocity_x': matched_arrays[10],
-    'velocity_y': matched_arrays[11],
-    'velocity_z': matched_arrays[12],
-    'total_acceleration_x': matched_arrays[13],
-    'total_acceleration_y': matched_arrays[14],
-    'total_acceleration_z': matched_arrays[15],
-    'earth_grav_acceleration_x': matched_arrays[16],
-    'earth_grav_acceleration_y': matched_arrays[17],
-    'earth_grav_acceleration_z': matched_arrays[18],
-    'j2_acceleration_x': matched_arrays[19],
-    'j2_acceleration_y': matched_arrays[20],
-    'j2_acceleration_z': matched_arrays[21],
-    'moon_acceleration_x': matched_arrays[22],
-    'moon_acceleration_y': matched_arrays[23],
-    'moon_acceleration_z': matched_arrays[24],
-    'drag_acceleration_x': matched_arrays[25],
-    'drag_acceleration_y': matched_arrays[26],
-    'drag_acceleration_z': matched_arrays[27],
-}
+    # Upload/download simulation data
+    #--------------------------------------------
+    def match_array_length(array, target_length):
+        if len(array) > target_length:
+            return array[:target_length]
+        elif len(array) < target_length:
+            return np.pad(array, (0, target_length - len(array)), mode='constant')
+        else:
+            return array
+        
+    arrays_to_match = [
+        velocity_norm, altitude, drag_acceleration_norm, T_aw_data,
+        r_eci[0], r_eci[1], r_eci[2], sol.y[3], sol.y[4], sol.y[5]
+    ] + [
+        [vec[i] for i in range(len(vec))]
+        for vec in [velocity, total_acceleration, earth_grav_acceleration,
+                    j2_acceleration, moon_acceleration, drag_acceleration]
+        for dim in range(3)
+    ]
 
-df = pd.DataFrame(data)
-# Display the download link in the Streamlit app
-st.sidebar.markdown(make_download_link(df, 'simulated_data.csv', 'Download simulated data'), unsafe_allow_html=True)
+    matched_arrays = [match_array_length(arr, len(sol.t)) for arr in arrays_to_match]
+
+
+    data = {
+        't': t_sol,
+        'velocity': matched_arrays[0],
+        'altitude': matched_arrays[1],
+        'drag_acceleration': matched_arrays[2],
+        'spacecraft_temperature': matched_arrays[3],
+        'x': matched_arrays[4],
+        'y': matched_arrays[5],
+        'z': matched_arrays[6],
+        'vx': matched_arrays[7],
+        'vy': matched_arrays[8],
+        'vz': matched_arrays[9],
+        'velocity_x': matched_arrays[10],
+        'velocity_y': matched_arrays[11],
+        'velocity_z': matched_arrays[12],
+        'total_acceleration_x': matched_arrays[13],
+        'total_acceleration_y': matched_arrays[14],
+        'total_acceleration_z': matched_arrays[15],
+        'earth_grav_acceleration_x': matched_arrays[16],
+        'earth_grav_acceleration_y': matched_arrays[17],
+        'earth_grav_acceleration_z': matched_arrays[18],
+        'j2_acceleration_x': matched_arrays[19],
+        'j2_acceleration_y': matched_arrays[20],
+        'j2_acceleration_z': matched_arrays[21],
+        'moon_acceleration_x': matched_arrays[22],
+        'moon_acceleration_y': matched_arrays[23],
+        'moon_acceleration_z': matched_arrays[24],
+        'drag_acceleration_x': matched_arrays[25],
+        'drag_acceleration_y': matched_arrays[26],
+        'drag_acceleration_z': matched_arrays[27],
+    }
+
+    df = pd.DataFrame(data)
+    # Display the download link in the Streamlit app
+    st.sidebar.markdown(make_download_link(df, 'simulated_data.csv', 'Download simulated data'), unsafe_allow_html=True)
 
 
 
@@ -536,7 +536,7 @@ with st.spinner("Generating trajectory 3d plot..."):
                                 y=[r_eci[1, 0]],
                                 z=[r_eci[2, 0]],
                                 mode='markers+text',
-                                marker=dict(size=5, color='yellow', symbol='circle'),
+                                marker=dict(size=5, color='#fcba03', symbol='circle'),
                                 text=["Starting point"],
                                 textposition="bottom center",
                                 showlegend=False))
@@ -593,6 +593,8 @@ with st.spinner("Generating trajectory 3d plot..."):
     fig3.update_layout(scene_aspectmode='data')
     st.plotly_chart(fig3, use_container_width=True, equal_axes=True)
     
+    # --------------------------------------------
+
     # Show heat rate by time
     # Normalize spacecraft_temperature data
     vmin, vmax = np.min(T_aw_data), np.max(T_aw_data)
@@ -775,33 +777,32 @@ Groundtrack's are a way to visualize the path of a spacecraft on a map in refere
 To do this we need to adjust our original frame of reference (Earth-Centered Inertial) to a new frame of reference (Earth-Centered Earth-Fixed).
 '''
 #'equirectangular', 'mercator', 'orthographic', 'natural earth', 'kavrayskiy7', 'miller', 'robinson', 'eckert4', 'azimuthal equal area', 'azimuthal equidistant', 'conic equal area', 'conic conformal', 'conic equidistant', 'gnomonic', 'stereographic', 'mollweide', 'hammer', 'transverse mercator', 'albers usa', 'winkel tripel', 'aitoff', 'sinusoidal']
-
-fig7 = go.Figure()
-# Convert ECEF to geodetic coordinates
-latitudes, longitudes = geodetic_coords[:, 0], geodetic_coords[:, 1]
-altitudes = geodetic_coords[:, 2]
-# limit data to 25000 points
-
-# Custom function to convert matplotlib colormap to Plotly colorscale
-altitudes = altitudes / 1000 # convert to km
-colormap = mpl.colormaps.get_cmap('viridis')
-custom_colorscale = mpl_to_plotly_colormap(colormap)
-vmin, vmax = np.min(altitudes), np.max(altitudes)
-normalized_altitude = (altitudes - vmin) / (vmax - vmin)
-
-# Number of subdivisions in the color scale
-num_subdivisions = 10
-
-# Calculate tick values and tick text for the subdivisions
-tickvals = np.linspace(0, 1, num_subdivisions)
-ticktext = [f"{vmin + tick * (vmax - vmin):.2f}" for tick in tickvals]
-
-# Add the final position label
-final_lat_str = f"{latitudes[-1]:.5f}"
-final_lon_str = f"{longitudes[-1]:.5f}"
-final_position_label = f"Final position<br>Lat: {final_lat_str}º North,<br>Lon: {final_lon_str}º East,<br>{altitudes[-1]:.2f} km Altitude"
-
 with st.spinner("Generating Groundtrack map..."):
+    fig7 = go.Figure()
+    # Convert ECEF to geodetic coordinates
+    latitudes, longitudes = geodetic_coords[:, 0], geodetic_coords[:, 1]
+    altitudes = geodetic_coords[:, 2]
+    # limit data to 25000 points
+
+    # Custom function to convert matplotlib colormap to Plotly colorscale
+    altitudes = altitudes / 1000 # convert to km
+    colormap = mpl.colormaps.get_cmap('viridis')
+    custom_colorscale = mpl_to_plotly_colormap(colormap)
+    vmin, vmax = np.min(altitudes), np.max(altitudes)
+    normalized_altitude = (altitudes - vmin) / (vmax - vmin)
+
+    # Number of subdivisions in the color scale
+    num_subdivisions = 10
+
+    # Calculate tick values and tick text for the subdivisions
+    tickvals = np.linspace(0, 1, num_subdivisions)
+    ticktext = [f"{vmin + tick * (vmax - vmin):.2f}" for tick in tickvals]
+
+    # Add the final position label
+    final_lat_str = f"{latitudes[-1]:.5f}"
+    final_lon_str = f"{longitudes[-1]:.5f}"
+    final_position_label = f"Final position<br>Lat: {final_lat_str}º North,<br>Lon: {final_lon_str}º East,<br>{altitudes[-1]:.2f} km Altitude"
+
     # Add a single trace for the ground track
     fig7.add_trace(go.Scattergeo(
         lon=longitudes,
@@ -1143,7 +1144,7 @@ fig_atmo = make_subplots(rows=1, cols=3, subplot_titles=("Temperature (K)", "Sol
 fig_atmo.add_trace(go.Scatter(x=temperatures, y=altitudes_graph, name='Temperature (K)', mode='lines', line=dict(color='red')), row=1, col=1)
 
 # Add solar factors trace
-fig_atmo.add_trace(go.Scatter(x=solar_factors, y=altitudes_graph, name='Solar Factor', mode='lines', line=dict(color='yellow')), row=1, col=2)
+fig_atmo.add_trace(go.Scatter(x=solar_factors, y=altitudes_graph, name='Solar Factor', mode='lines', line=dict(color='#fcba03')), row=1, col=2)
 
 # Add density trace
 fig_atmo.add_trace(go.Scatter(x=densities, y=altitudes_graph, name='Density (kg/m³)', mode='lines', line=dict(color='green')), row=1, col=3)
