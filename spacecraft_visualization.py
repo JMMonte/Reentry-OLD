@@ -2,13 +2,15 @@ import plotly.graph_objects as go
 import numpy as np
 from numba import jit, njit
 from coordinate_converter import (ecef_to_eci, geodetic_to_spheroid)
+from spacecraft_model import *
 import astropy.units as u
 from astropy.coordinates import CartesianRepresentation
 import shapely.geometry as sgeom
 import plotly.express as px
 import pvlib
-import pandas as pd
-
+import cartopy.feature as cfeature
+from constants import *
+import streamlit as st
 
 base_radius = 1
 height_ratio = 1.315
@@ -26,56 +28,190 @@ heatshield_colorscale = [
     [0.5, "red"],
     [1, "black"]
 ]
-def create_cone_mesh(height_ratio, top_radius_ratio, truncation_ratio, num_points=100):
-    u = np.linspace(1 - truncation_ratio, 1, num_points)
-    v = np.linspace(0, 2 * np.pi, num_points)
-    
-    u_grid, v_grid = np.meshgrid(u, v)
-    
-    x = u_grid * np.cos(v_grid)
-    y = u_grid * np.sin(v_grid)
-    
-    z = -height_ratio * u_grid
-    x_top = top_radius_ratio * x + (1 - top_radius_ratio) * x[::-1]
-    
-    return np.concatenate([x, x_top]), np.concatenate([y, y[::-1]]), np.concatenate([z, z[::-1]])
 
+def visualize_orbit(
+    x_pos, y_pos, z_pos,
+    x_vel, y_vel, z_vel,
+    alt,
+    orbit, 
+    gmst0,
+    epoch,
+    data=None,
+    altitude_event_times=None,
+    crossing_points=None,
+    impact_time=None,
+    closest_indices=None,
+    country_feature=cfeature.BORDERS,
+    coastline_feature=cfeature.COASTLINE
+):
+    scale_factor = 200  # Adjust this value to scale the velocity vector
+    vel_arrow = SpacecraftVisualization.create_3d_arrow(x_pos, y_pos, z_pos, x_pos + x_vel * scale_factor, y_pos + y_vel * scale_factor, z_pos + z_vel * scale_factor, 'green', 'Velocity vector') # Velocity vector scaled
+    pos_arrow = SpacecraftVisualization.create_3d_arrow(0, 0, 0, x_pos, y_pos, z_pos, 'red', 'Position vector') # Position vector
 
-def create_half_sphere_mesh(radius, height_offset, num_points=100):
-    u = np.linspace(0, 0.5 * np.pi, num_points)
-    v = np.linspace(0, 2 * np.pi, num_points)
+    fig = go.Figure()
+
+    # Initial conditions
+    orbit_trace = SpacecraftVisualization.plot_orbit_3d(orbit, color='#05FF7A', name='Classical orbit', dash='dot')
+    fig.add_trace(orbit_trace)
+    fig.add_traces(pos_arrow + vel_arrow)
+
+    # Calculate GMST
+    if impact_time is not None:
+        gmst = gmst0 + EARTH_OMEGA * impact_time
+        crossing_points_r_v = data.y[:, closest_indices]
+        crossing_points_r = crossing_points_r_v[:3]
+    else:
+        gmst = gmst0
+
+    # Add the Earth and other geographical features
+    spheroid_mesh = SpacecraftVisualization.create_spheroid_mesh(epoch)
+    fig.add_trace(spheroid_mesh)
+    country_traces = SpacecraftVisualization.get_geo_traces(country_feature, gmst)
+    coastline_traces = SpacecraftVisualization.get_geo_traces(coastline_feature, gmst)
+    lat_lines = SpacecraftVisualization.create_latitude_lines(gmst=gmst)
+    lon_lines = SpacecraftVisualization.create_longitude_lines(gmst=gmst)
+
+    for trace in country_traces + coastline_traces + lat_lines + lon_lines:
+        trace.showlegend = False
+        fig.add_trace(trace)
     
-    u_grid, v_grid = np.meshgrid(u, v)
+    # Add periapsis and apoapsis points
+    periapsis_ECI, apoapsis_ECI = periapsis_apoapsis_points(orbit)
+    # Calculate the altitude of periapsis and apoapsis points
+    periapsis_altitude = (orbit.r_p.to_value('m') - EARTH_R) / 1000
+    apoapsis_altitude = (orbit.r_a.to_value('m') - EARTH_R) / 1000
+
+    # Add the periapsis marker
+    fig.add_trace(go.Scatter3d(x=[periapsis_ECI[0]],
+                                y=[periapsis_ECI[1]],
+                                z=[periapsis_ECI[2]],
+                                mode='markers',
+                                marker=dict(size=5, color='red', symbol='circle'),
+                                name='Periapsis'))
+
+    # Add the apoapsis marker
+    fig.add_trace(go.Scatter3d(x=[apoapsis_ECI[0]],
+                                y=[apoapsis_ECI[1]],
+                                z=[apoapsis_ECI[2]],
+                                mode='markers',
+                                marker=dict(size=5, color='#05FF7A', symbol='circle'),
+                                name='Apoapsis'))
     
-    x = radius * np.sin(u_grid) * np.cos(v_grid)
-    y = radius * np.sin(u_grid) * np.sin(v_grid)
-    z = -0.25 * radius * np.cos(u_grid) - height_offset
+
+    # Add the starting point marker
+    fig.add_trace(go.Scatter3d(x=[x_pos],
+                                y=[y_pos],
+                                z=[z_pos],
+                                mode='markers',
+                                marker=dict(size=5, color='#fcba03', symbol='circle'),
+                                name='Start'))
     
-    return x, y, z
-
-
-def create_circular_cap(radius, height, num_points=100):
-    u = np.linspace(0, radius, num_points)
-    v = np.linspace(0, 2 * np.pi, num_points)
-
-    u_grid, v_grid = np.meshgrid(u, v)
-
-    x = u_grid * np.cos(v_grid)
-    y = u_grid * np.sin(v_grid)
-    z = -height * np.ones_like(u_grid)
-
-    return x, y, z
-
-@jit(nopython=True)
-def rotate_around_y(x, y, z, angle_degrees):
-    angle_rad = np.radians(angle_degrees)
-    cos_angle = np.cos(angle_rad)
-    sin_angle = np.sin(angle_rad)
     
-    x_rot = x * cos_angle - z * sin_angle
-    z_rot = x * sin_angle + z * cos_angle
+    # Add annotations for periapsis and apoapsis
+    annotations_trace = go.Scatter3d(
+                    x=[periapsis_ECI[0], apoapsis_ECI[0], x_pos],
+                    y=[periapsis_ECI[1], apoapsis_ECI[1], y_pos],
+                    z=[periapsis_ECI[2], apoapsis_ECI[2], z_pos],
+                    mode='text',
+                    text=[f"Periapsis<br>Altitude:<br>{periapsis_altitude:.2f} km",
+                        f"Apoapsis<br>Altitude:<br>{apoapsis_altitude:.2f} km",
+                        f"Start<br>Position<br>Altitude:<br>{alt:.2f} km"],
+                    textfont=dict(color=["red", "#05FF7A", "#fcba03"], size=12),
+                    textposition="bottom center",
+                    hoverinfo="none",
+                    showlegend=False
+    )
+    # Add annotations to figure
+    fig.add_trace(annotations_trace)
+
+    # Simulation data
+    if data is not None:
+        r_eci = data.y[0:3]
+        t_sol = data.t
+        T_aw_data = data.additional_data['spacecraft_temperature']
+        trajectory_trace = SpacecraftVisualization.create_3d_scatter(
+            r_eci[0], r_eci[1], r_eci[2], T_aw_data, name='Simulated trajectory', colorscale='Agsunset'
+        )
+        fig.add_trace(trajectory_trace)
+
+        # Final position or touchdown
+        marker_color = 'purple' if altitude_event_times.size > 0 else 'red'
+        marker_name = 'Touchdown' if altitude_event_times.size > 0 else 'Final position'
+        fig.add_trace(go.Scatter3d(
+            x=[r_eci[0, -1]], y=[r_eci[1, -1]], z=[r_eci[2, -1]], mode='markers',
+            marker=dict(size=6, color=marker_color), name=marker_name
+        ))
+
+        # Karman line crossing
+        if crossing_points is not None:
+            crossing_points_r_x = np.float64(crossing_points_r[0])
+            crossing_points_r_y = np.float64(crossing_points_r[1])
+            crossing_points_r_z = np.float64(crossing_points_r[2])
+            fig.add_trace(go.Scatter3d(
+                x=[crossing_points_r_x], y=[crossing_points_r_y], z=[crossing_points_r_z],
+                mode='markers+text', marker=dict(size=6, color='orange'),
+                text=["Karman line crossing"], textposition="bottom center", showlegend=False
+            ))
+
+    fig.update_layout(legend=dict(yanchor="bottom", y=0.01, xanchor="left", x=0.01),scene=dict(
+        xaxis=dict(visible=False),
+        yaxis=dict(visible=False),
+        zaxis=dict(visible=False),
+    ),
+    margin=dict(r=0, l=0, t=0, b=0),
+    height=600,)
+    fig.update_layout(scene_camera=dict(eye=dict(x=-0.5, y=0.6, z=1)))
+    fig.update_layout(scene_aspectmode='data')
     
-    return x_rot, y, z_rot
+    return fig
+
+def plot_heatmap(
+    t_sol, normalized_spacecraft_temperature, T_aw_data, 
+    custom_colorscale, spacecraft_temperature_tickvals, spacecraft_temperature_ticktext
+):
+    fig_colorscale = go.Figure()
+    fig_colorscale.add_trace(go.Heatmap(
+        x=t_sol,
+        z=[normalized_spacecraft_temperature],
+        text=[[f"{value:.3E} K" for value in T_aw_data]],
+        hoverinfo='x+y+text',
+        colorscale=custom_colorscale,
+        colorbar=dict(
+            title="Temperature at Stagnation Point [K]",
+            titleside="bottom",
+            x=0.5,
+            lenmode="fraction",
+            len=1,
+            yanchor="top",
+            y=-1.1,
+            thicknessmode="pixels",
+            thickness=20,
+            orientation="h",
+            tickvals=spacecraft_temperature_tickvals,
+            ticktext=spacecraft_temperature_ticktext,
+        ),
+    ))
+
+    fig_colorscale.update_layout(
+        autosize=True,
+        width=800,
+        height=200,
+        margin=dict(l=0, r=0, t=0, b=100),
+        yaxis=dict(
+            showticklabels=False,
+            showgrid=False,
+            zeroline=False,
+        ),
+        xaxis=dict(
+            showticklabels=True,
+            showgrid=True,
+            zeroline=False,
+            title="Time [s]",
+        ),
+        showlegend=True,
+    )
+
+    st.plotly_chart(fig_colorscale, use_container_width=True)
 
 @njit
 def compute_vertex_indices(num_lat, num_lon):
@@ -86,100 +222,130 @@ def compute_vertex_indices(num_lat, num_lon):
             vertex_indices.append([i * num_lon + j + 1, (i + 1) * num_lon + j + 1, (i + 1) * num_lon + j])
     return np.array(vertex_indices).T
 
-@jit(nopython=True)
-def generate_turbulent_lines(base_radius, num_lines=40, num_points=150, randomness=0.2, max_length=2):
-    lines = []
+def compute_velocities(geodetic_coords, v_ecef_vals, t_sol, altitudes, sim, velocity_norm):
+    ground_velocity_ecef = np.linalg.norm(v_ecef_vals[:, :2], axis=1)
+    vertical_velocity_ecef = np.gradient(altitudes, t_sol)
+    ground_velocity_geodetic = np.zeros(len(t_sol))
+    vertical_velocity_geodetic = np.zeros(len(t_sol))
     
-    for i in range(num_lines):
-        angle = 2 * np.pi * i / num_lines
-        x_start = -base_radius*0.8 * np.cos(angle)
-        y_start = -base_radius*0.8 * np.sin(angle)
-        z_start = -height_ratio*1.2
-        
-        x = [x_start]
-        y = [y_start]
-        z = [z_start]
-        
-        for j in range(1, num_points):
-            step = max_length * j / num_points
-            x.append(x_start - step * np.cos(angle) + randomness * (np.random.rand() - 0.5))
-            y.append(y_start - step * np.sin(angle) + randomness * (np.random.rand() - 0.5))
-            z.append(z_start + step + randomness * (np.random.rand() - 0.5))
-            
-        lines.append((x, y, z))
-        
-    return lines
+    for i, (lat, lon, _) in enumerate(geodetic_coords):
+        lat_rad, lon_rad = np.radians(lat), np.radians(lon)
+        rotation_matrix = np.array([
+            [-np.sin(lon_rad), -np.cos(lon_rad) * np.sin(lat_rad), np.cos(lon_rad) * np.cos(lat_rad)],
+            [np.cos(lon_rad), -np.sin(lon_rad) * np.sin(lat_rad), np.sin(lon_rad) * np.cos(lat_rad)],
+            [0, np.cos(lat_rad), np.sin(lat_rad)]
+        ])
 
+        v_geodetic = np.dot(rotation_matrix, v_ecef_vals[i])
+        ground_velocity_geodetic[i] = np.linalg.norm(v_geodetic[:2])
+        vertical_velocity_geodetic[i] = v_geodetic[2]
+    
+    return {
+        'Orbital Velocity': velocity_norm,
+        'Ground Velocity (ECEF)': ground_velocity_ecef,
+        'Vertical Velocity (ECEF)': vertical_velocity_ecef,
+        'Ground Velocity (Geodetic)': ground_velocity_geodetic,
+        'Vertical Velocity (Geodetic)': vertical_velocity_geodetic,
+        'X Velocity': sim.y[3, :],
+        'Y Velocity': sim.y[4, :],
+        'Z Velocity': sim.y[5, :]
+    }
 
-def create_3d_line(x, y, z, colorscale='Plasma', showlegend=False):
-    colors = np.linspace(0, 1, len(x))
-    line_color = [colorscale[int(c * (len(colorscale) - 1))] for c in colors]
+def add_annotations(fig, x_positions, texts, min_velocity, max_velocity, color):
+    for x_pos, text in zip(x_positions, texts):
+        fig.add_shape(type='line', x0=x_pos, x1=x_pos, y0=min_velocity, y1=max_velocity, yref='y', xref='x', line=dict(color=color, width=2, dash='dot'))
+        fig.add_annotation(x=x_pos, y=max_velocity, text=text, showarrow=True, font=dict(size=10), xanchor='center', yshift=10)
 
-    line = go.Scatter3d(
-        x=x,
-        y=y,
-        z=z,
-        mode='lines',
-        line=dict(width=2, color=line_color),
-        showlegend=showlegend,
-        marker=dict(color=colors, colorscale=colorscale, showscale=False)
-    )
-    return line
-
-
-def create_capsule ():
-    cap_radius = base_radius * (1 - truncation_ratio) * top_radius_ratio * 2
-    cap_height = height_ratio * (1 - truncation_ratio)
-
-    turbulent_lines = generate_turbulent_lines(base_radius)
-    x_cap, y_cap, z_cap = create_circular_cap(cap_radius, cap_height)
-    x_cone, y_cone, z_cone = create_cone_mesh(height_ratio, top_radius_ratio, truncation_ratio)
-    x_shield, y_shield, z_shield = create_half_sphere_mesh(base_radius, height_ratio)
-
-
-    angle_degrees = 45
-    x_cone_rot, y_cone_rot, z_cone_rot = rotate_around_y(x_cone, y_cone, z_cone, angle_degrees)
-    x_cap_rot, y_cap_rot, z_cap_rot = rotate_around_y(x_cap, y_cap, z_cap, angle_degrees)
-    x_shield_rot, y_shield_rot, z_shield_rot = rotate_around_y(x_shield, y_shield, z_shield, angle_degrees)
-    plasma_colorscale = px.colors.sequential.Plasma[::-1]
-
-    fig = go.Figure()
-    for line in turbulent_lines:
-        x_line, y_line, z_line = rotate_around_y(np.array(line[0]), np.array(line[1]), np.array(line[2]), angle_degrees)
-        fig.add_trace(go.Scatter3d(x=x_line, y=y_line, z=z_line, mode='lines', line=dict(width=2, color="blue"), showlegend=False))
-
-    for line in turbulent_lines:
-        x_line, y_line, z_line = rotate_around_y(np.array(line[0]), np.array(line[1]), np.array(line[2]), angle_degrees)
-        fig.add_trace(create_3d_line(x_line, y_line, z_line, colorscale=plasma_colorscale))
-        
-
-    fig.add_trace(go.Surface(x=x_cone_rot, y=y_cone_rot, z=z_cone_rot, colorscale=metallic_colorscale, showscale=False))
-    fig.add_trace(go.Surface(x=x_shield_rot, y=y_shield_rot, z=z_shield_rot, colorscale=heatshield_colorscale, showscale=False))
-    fig.add_trace(go.Surface(x=x_cap_rot, y=y_cap_rot, z=z_cap_rot, colorscale=metallic_colorscale, showscale=False))
-
-    x_range = [-10, 20]
-    y_range = [-15, 15]
-    z_range = [-20, 10]
-
-    fig.update_layout(
-        scene=dict(
-            aspectratio=dict(x=1, y=1, z=1),  # Manually set the aspect ratio
-            xaxis=dict(range=x_range, visible=False),
-            yaxis=dict(range=y_range, visible=False),
-            zaxis=dict(range=z_range, visible=False),
-            camera=dict(
-                up=dict(x=0, y=0, z=1),
-                center=dict(x=-0.15, y=0, z=0.15),
-                eye=dict(x=-0.15, y=-0.2, z=0.2)
-            )
+def plot_ground_track(longitudes, latitudes, normalized_altitude, custom_colorscale, tickvals, ticktext, colormap, final_position_label, st):
+    # Add a single trace for the ground track
+    fig7 = go.Figure()
+    fig7.add_trace(go.Scattergeo(
+        lon=longitudes,
+        lat=latitudes,
+        mode='markers',
+        marker=dict(
+            color=normalized_altitude,
+            size=2,
+            colorscale=custom_colorscale,
+            showscale=True,
+            colorbar=dict(
+                title="Altitude (km)",
+                tickvals=tickvals,
+                ticktext=ticktext,
+            ),
         ),
+        showlegend=True,
+        name='Groundtrack',
+    ))
+
+    # Add lines with colors from the color scale
+    for i in range(len(longitudes) - 1):
+        start_lat, start_lon = latitudes[i], longitudes[i]
+        end_lat, end_lon = latitudes[i + 1], longitudes[i + 1]
+
+        line_color = get_color(normalized_altitude[i], colormap)
+        fig7.add_trace(go.Scattergeo(
+            lon=[start_lon, end_lon],
+            lat=[start_lat, end_lat],
+            mode='lines',
+            line=dict(color=line_color, width=2),
+            showlegend=False,
+            name='Groundtrack',
+        ))
+
+    # Add point for starting point and another for final position
+    fig7.add_trace(go.Scattergeo(
+        lat=[latitudes[-1]],
+        lon=[longitudes[-1]],
+        marker={
+            "color": "Red",
+            "line": {
+                "width": 1
+            },
+            "size": 10
+        },
+        mode="markers+text",
+        name="Final position",
+        text=[final_position_label],
+        textfont={
+            "color": "White",
+            "size": 16
+        },
+        textposition="top right",
+        showlegend=True,
+    ))
+    fig7.add_trace(go.Scattergeo(
+        lon=[longitudes[0]],
+        lat=[latitudes[0]],
+        mode='markers',
+        marker=dict(color='green', size=10),
+        showlegend=True,
+        name='Initial position'
+    ))
+
+    fig7.update_layout(
         autosize=True,
-        margin=dict(l=0, r=0, t=30, b=0)
+        margin=dict(l=0, r=0, t=50, b=0),
+        height=800,
+        geo=dict(
+            showland=True,
+            showcountries=True,
+            showocean=True,
+            showlakes=True,
+            showrivers=True,
+            countrywidth=0.5,
+            landcolor='rgba(0, 110, 243, 0.2)',
+            oceancolor='rgba(0, 0, 255, 0.1)',
+            bgcolor="rgba(0, 0, 0, 0)",
+            coastlinecolor='blue',
+            projection=dict(type='equirectangular'),
+            lonaxis=dict(range=[-180, 180], showgrid=True, gridwidth=0.5, gridcolor='rgba(0, 0, 255, 0.5)'),
+            lataxis=dict(range=[-90, 90], showgrid=True, gridwidth=0.5, gridcolor='rgba(0, 0, 255, 0.5)'),
+        ),
     )
-
-    return fig
-
-
+    fig7.update_geos(resolution=110)
+    fig7.update_layout(legend=dict(y=1.1, yanchor="top", xanchor="left", x=0, orientation="h"))
+    st.plotly_chart(fig7, use_container_width=True)
 
 class SpacecraftVisualization:
     @staticmethod
@@ -268,8 +434,8 @@ class SpacecraftVisualization:
     def create_spheroid_mesh(epoch, N=50):
         '''
         Creates a plotly mesh trace for a spheroid
+        :param epoch: epoch object
         :param N: number of points to use for each latitude and longitude line
-        :param attractor: attractor object
         :return: plotly mesh trace
         '''
         EARTH_COLOR_SCALE = [

@@ -1,98 +1,66 @@
 import math
 from astropy import units as u
+from poliastro.core.elements import coe2rv
 from astropy.time import Time
-from coordinate_converter import (enu_to_ecef, ecef_to_eci, geodetic_to_spheroid, eci_to_ecef, ecef_to_geodetic)
+from coordinate_converter import *
 import numpy as np
+import matplotlib.colors as mcolors
 from scipy.integrate import solve_ivp
 import time
 from numba import jit, njit
-# Constants
-# ---------
-# Operations
-PI = np.pi
-DEG_TO_RAD = float(PI / 180.0) # degrees to radians
-RAD_TO_DEG = float(180.0 / PI) # radians to degrees
-JD_AT_0 = 2451545.0 # Julian date at 0 Jan 2000
-G = 6.67430e-11  # m^3 kg^-1 s^-2, gravitational constant
+from copy import deepcopy
+from poliastro.twobody import Orbit
+import base64
+from constants import *
 
-#Earth physical constants
-EARTH_MU = 3.986004418e14  # gravitational parameter of Earth in m^3/s^2
-EARTH_MU_KM = 3.986004418e5  # gravitational parameter of Earth in km^3/s^2
-EARTH_R = 6378137.0  # radius of Earth in m
-EARTH_R_KM = 6378.137  # radius of Earth in m
-EARTH_R_POLAR = 6356752.3142  # polar radius of Earth in m
-EARTH_OMEGA = 7.292114146686322e-05  # Earth rotation speed in rad/s
-EARTH_J2 = 0.00108263 # J2 of Earth (dimensionless)
-EARTH_MASS = 5.972e24  # Mass (kg)
-YEAR_D = 365.25636 # days in a year
-YEAR_S = 365.25636 * 24 * 60 * 60  # seconds in a year
-EARTH_ROT_S = 86164.0905  # Earth rotation period in seconds
-EARTH_GRAVITY = 9.80665  # Gravity (m/s^2)
-# Derived physical constants
-EARTH_ROTATION_RATE_DEG_PER_SEC = 360 / EARTH_ROT_S  # Earth rotation rate in degrees per second
-EARTH_RORATION_RATE_RAD_PER_SEC = EARTH_ROTATION_RATE_DEG_PER_SEC * DEG_TO_RAD  # Earth rotation rate in radians per second
-EARTH_PERIMETER = EARTH_R * 2 * PI  # Earth perimeter in meters
-EARTH_ROTATION_RATE_M_S = EARTH_PERIMETER / EARTH_ROT_S  # Earth rotation rate in meters per second
+def match_array_length(array, target_length):
+    if len(array) > target_length:
+        return array[:target_length]
+    elif len(array) < target_length:
+        return np.pad(array, (0, target_length - len(array)), mode='constant')
+    else:
+        return array
 
-# Moon
-MOON_A = 384400000.0  # Semi-major axis (meters)
-MOON_E = 0.0549  # Eccentricity
-MOON_I = 5.145 * DEG_TO_RAD  # Inclination (radians)
-MOON_OMEGA = 125.045 * DEG_TO_RAD  # Longitude of ascending node (radians)
-MOON_W = 318.0634 * DEG_TO_RAD  # Argument of perigee (radians)
-MOON_M0 = 115.3654 * DEG_TO_RAD  # Mean anomaly at epoch J2000 (radians)
-MOON_MASS = 7.34767309e22  # Mass (kg)
-MOON_ROT_D = 27.321661  # Rotation period in days
-MOON_ROT_S = MOON_ROT_D * 24 * 3600  # Rotation period in seconds
-MOON_MMOTION_DEG =  360 / MOON_ROT_D # Mean motion (degrees/day)
-MOON_MMOTION_RAD = MOON_MMOTION_DEG * DEG_TO_RAD  # Mean motion (radians/day)
-MOON_K = 4.9048695e12  # Surface gravity (m/s^2)
+#special functions
+@jit(nopython=True)
+def filter_results_by_altitude(sol, altitude):
+    valid_indices = [i for i, alt in enumerate(altitude) if alt >= 0]
+    sol = deepcopy(sol)
+    sol.y = sol.y[:, valid_indices]
+    sol.t = sol.t[valid_indices]
+    sol.additional_data = [sol.additional_data[i] for i in valid_indices]
+    return sol
 
-#Sun
-SUN_MU = 132712442099.00002 # gravitational parameter of Sun in km^3/s^2
-SUN_A = 149598022990.63  # Semi-major axis (meters)
-SUN_E = 0.01670862  # Eccentricity
-SUN_I = 0.00005 * DEG_TO_RAD  # Inclination (radians)
-SUN_OMEGA = -11.26064 * DEG_TO_RAD  # Longitude of ascending node (radians)
-SUN_W = 102.94719 * DEG_TO_RAD  # Argument of perigee (radians)
-SUN_L0 = 100.46435 * DEG_TO_RAD  # Mean longitude at epoch J2000 (radians)
-SUN_MASS = 1.988544e30  # Mass (kg)
-SUN_K = 1.32712440042e20  # Surface gravity (m/s^2)
-SOLAR_CONSTANT = 1361  # W/m^2
+def make_download_link(df, filename, text):
+    csv = df.to_csv(index=False)
+    b64 = base64.b64encode(csv.encode()).decode()
+    return f'<a href="data:file/csv;base64,{b64}" download="{filename}">{text}</a>'
 
-# Atmosphere
-# U.S. Standard Atmosphere altitude breakpoints and temperature gradients (m, K/m)
-ALTITUDE_BREAKPOINTS = np.array([0, 11000, 20000, 32000, 47000, 51000, 71000, 84852])
-TEMPERATURE_GRADIENTS = np.array([-0.0065, 0, 0.001, 0.0028, 0, -0.0028, -0.002, 0])
-BASE_TEMPERATURES = np.array([288.15, 216.65, 216.65, 228.65, 270.65, 270.65, 214.65, 186.95])
-BASE_PRESSURES = np.array([101325, 22632.1, 5474.9, 868.02, 110.91, 66.939, 3.9564, 0.3734])
-BASE_DENSITIES = np.array([1.225, 0.36391, 0.08803, 0.01322, 0.00143, 0.00086, 0.000064, 0.000006])
-# Earth atmosphere constants
-EARTH_AIR_MOLAR_MASS = 0.0289644 # molar mass of Earth's air (kg/mol)
-EARTH_GAS_CONSTANT = 8.31447 # Gas Constant Values based on Energy Units ; J · 8.31447, 3771.38
-R_GAS = 287.0  # J/kgK for air; This value is appropriate for air if Joule is chosen for the unit of energy, kg as unit of mass and K as unit of temperature, i.e. $ R = 287 \;$   J$ /($kg$ \;$K$ )$
-SCALE_HEIGHT = 7500.0  # Scale height (m)
-#Solar weather constants
-F107_MIN = 70.0
-F107_MAX = 230.0
-F107_AMPLITUDE = (F107_MAX - F107_MIN) / 2.0
-DAYS_PER_MONTH = 30.44  # Average number of days per month
+def mpl_to_plotly_colormap(cmap, num_colors=256):
+    colors = [mcolors.rgb2hex(cmap(i)[:3]) for i in range(num_colors)]
+    scale = np.linspace(0, 1, num=num_colors)
+    return [list(a) for a in zip(scale, colors)]
 
-# Themodynamic constants
-GAMMA_AIR = 1.4  # Ratio of specific heats for air
-RECOVERY_FACTOR_AIR = 0.9  # Assuming laminar flow over a flat plate
-CP_AIR = 1005 # Specific heat of air at constant pressure (J/kg-K)
-STAG_K = 1.83e-4 # Stagnation point heat transfer coefficient (W/m^2-K^0.5)
-FLOW_TYPE_EXP = 0.5 # Flow type exponent (0.5 for laminar, 0.8 for turbulent)
-EMISSIVITY_SURF = 0.8 # Emissivity of surface
-STEFAN_BOLTZMANN_CONSTANT = 5.67e-8 # Stefan-Boltzmann constant (W/m^2-K^4)
-T_REF = 273.15  # Reference temperature in Kelvin
-MU_REF = 1.716e-5  # Reference dynamic viscosity in Pa.s
-SUTHERLAND_CONSTANT = 110.4  # Sutherland's constant in Kelvin
-CP_BASE = 1000  # Base specific heat at constant pressure at 298 K
-CP_RATE = 0.5  # Rate of change of specific heat with temperature
-K_AIR_COEFFICIENT = 2.64638e-3  # Coefficient for thermal conductivity of air
+def get_color(normalized_value, colormap):
+    rgba = colormap(normalized_value)
+    return f"rgba({int(rgba[0]*255)}, {int(rgba[1]*255)}, {int(rgba[2]*255)}, {rgba[3]})"
 
+def periapsis_apoapsis_points(orbit: Orbit):
+    k = orbit.attractor.k.to_value("km^3 / s^2")
+
+    # Calculate the true anomalies for periapsis and apoapsis
+    nu_periapsis = 0
+    nu_apoapsis = np.pi
+
+    # Calculate the position and velocity vectors for periapsis and apoapsis in ECI frame
+    r_periapsis_ECI, _ = coe2rv(k, orbit.p.to_value('km'), orbit.ecc.value, orbit.inc.to_value('rad'), orbit.raan.to_value('rad'), orbit.argp.to_value('rad'), nu_periapsis)
+    r_apoapsis_ECI, _ = coe2rv(k, orbit.p.to_value('km'), orbit.ecc.value, orbit.inc.to_value('rad'), orbit.raan.to_value('rad'), orbit.argp.to_value('rad'), nu_apoapsis)
+
+    # Convert the position vectors from km to m
+    r_periapsis_ECI = r_periapsis_ECI * 1000
+    r_apoapsis_ECI = r_apoapsis_ECI * 1000
+
+    return r_periapsis_ECI, r_apoapsis_ECI
 
 # numba functions
 # ----------------
