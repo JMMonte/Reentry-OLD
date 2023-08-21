@@ -64,7 +64,7 @@ st.title("Spacecraft Reentry Simulator")
 sidebar = st.sidebar
 with st.sidebar:
     st.title("Mission Parameters")  # Define initial state (position and velocity vectors)
-
+    '''To get started, edit the mission parameters and click the "Run Simulation" button.'''
     with st.expander("ℹ Help"):
         HELP_TEXT
 
@@ -261,7 +261,8 @@ elif run_simulation:
 
 
         # normalize each acceleration vector
-        velocity_norm = np.linalg.norm(v_eci, axis=1)
+        velocity_norm = np.linalg.norm(v_eci, axis=0)
+
         total_acceleration_norm = np.linalg.norm(total_acceleration, axis=1)
         earth_grav_acceleration_norm = np.linalg.norm(earth_grav_acceleration, axis=1)
         j2_acceleration_norm = np.linalg.norm(j2_acceleration, axis=1)
@@ -282,8 +283,9 @@ elif run_simulation:
         latitudes, longitudes = geodetic_coords[:, 0], geodetic_coords[:, 1]
         altitudes = geodetic_coords[:, 2]
 
-        # Custom function to convert matplotlib colormap to Plotly colorscale
+        # Compute 
         velocities = compute_velocities(geodetic_coords, v_ecef_vals, t_sol, altitudes, sim, velocity_norm)
+        
         max_velocity = max(np.max(vel) for vel in velocities.values())
         min_velocity = min(np.min(vel) for vel in velocities.values())
 
@@ -338,7 +340,6 @@ elif run_simulation:
         ]
 
         matched_arrays = [match_array_length(arr, len(sim.t)) for arr in arrays_to_match]
-
 
         data = {
             't': t_sol,
@@ -640,7 +641,7 @@ elif run_simulation:
         st.subheader('Atmospheric Model')
         st.write('This simulation uses a simplified atmospheric model based on the NRLMSISE-00 and works by dividing the atmosphere into layers with specific temperature gradients and base pressures. The temperature and pressure at a given altitude are calculated, followed by the atmospheric density. The model then incorporates the latitude and solar activity factors to provide more accurate results for density and temperature.')
         with st.expander("Click here to learn more about this simulator's atmospheric model"):
-            ATMOSPHERIC_MODEL_TEXT # label from copy_text.py
+            ATMOSPHERIC_MODEL_TEXT
 
         altitudes_graph = np.linspace(0, 1000000, num=1000)
         temperatures = []
