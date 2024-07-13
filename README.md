@@ -1,5 +1,5 @@
 # Spacecraft Reentry Simulation
-New more powerful version here: [https://github.com/JMMonte/Reentry_v2](https://github.com/JMMonte/Reentry_v2)
+🚨🚨🚨 `NEW` and MORE powerful version here: [https://github.com/JMMonte/Reentry_v2](https://github.com/JMMonte/Reentry_v2)
 
 ![Screenshot](/assets/Screenshot%202023-05-05%20at%2013.34.09.png)
 
